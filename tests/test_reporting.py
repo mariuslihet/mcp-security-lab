@@ -104,3 +104,14 @@ def test_embedded_comparison_data_cannot_close_script_and_omits_conversations(tm
     assert embedded['rows'][0]['case'] == attack
     assert 'PRIVATE_CONVERSATION_MARKER' not in parser.data
     assert attack not in html
+
+
+def test_portable_evidence_links_resolve_from_report_folder(tmp_path):
+    from simlab.dashboard import evidence_links
+
+    report_dir = tmp_path / "downloaded-example"
+    (report_dir / "case").mkdir(parents=True)
+    (report_dir / "case" / "wire.jsonl").write_text('{}\n')
+    links = evidence_links({"audit": "case/wire.jsonl", "actors": "../outside.jsonl"}, report_dir)
+    assert 'href="case/wire.jsonl"' in links
+    assert '../outside.jsonl' not in links

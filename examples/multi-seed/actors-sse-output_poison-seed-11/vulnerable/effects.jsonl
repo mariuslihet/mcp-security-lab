@@ -1,0 +1,2 @@
+{"event": "received", "tool": "fetch_logs", "arguments": {"channel": "normal"}}
+{"event": "completed", "tool": "fetch_logs"}

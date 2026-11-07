@@ -1,0 +1,53 @@
+{"event": "received", "tool": "read_file", "arguments": {"path": "public.txt"}}
+{"event": "file_read", "path": "D:\\PROIECTE\\mcp-simulation-lab\\runs\\features-multiseed-20261107\\protocol-sse-vulnerable\\workspace\\public.txt", "outside": false}
+{"event": "completed", "tool": "read_file"}
+{"event": "received", "tool": "list_directory", "arguments": {"path": "."}}
+{"event": "directory_listed", "path": "D:\\PROIECTE\\mcp-simulation-lab\\runs\\features-multiseed-20261107\\protocol-sse-vulnerable\\workspace", "outside": false}
+{"event": "completed", "tool": "list_directory"}
+{"event": "received", "tool": "calculate", "arguments": {"expression": "2+2"}}
+{"event": "completed", "tool": "calculate"}
+{"event": "received", "tool": "forward_state", "arguments": {"handle": "synthetic-read-handle", "audience": "ops", "action": "read"}}
+{"event": "state_used", "audience": "ops", "action": "read", "echoed": true}
+{"event": "completed", "tool": "forward_state"}
+{"event": "received", "tool": "fetch_logs", "arguments": {"channel": "normal"}}
+{"event": "completed", "tool": "fetch_logs"}
+{"event": "received", "tool": "fetch_logs", "arguments": {"channel": "error"}}
+{"event": "received", "tool": "read_file", "arguments": {"path": "poison.md"}}
+{"event": "file_read", "path": "D:\\PROIECTE\\mcp-simulation-lab\\runs\\features-multiseed-20261107\\protocol-sse-vulnerable\\workspace\\poison.md", "outside": false}
+{"event": "completed", "tool": "read_file"}
+{"event": "received", "tool": "read_file", "arguments": {"path": "../outside/secret.txt"}}
+{"event": "file_read", "path": "D:\\PROIECTE\\mcp-simulation-lab\\runs\\features-multiseed-20261107\\protocol-sse-vulnerable\\outside\\secret.txt", "outside": true}
+{"event": "completed", "tool": "read_file"}
+{"event": "received", "tool": "read_file", "arguments": {"path": "D:\\PROIECTE\\mcp-simulation-lab\\runs\\features-multiseed-20261107\\protocol-sse-vulnerable\\outside\\secret.txt"}}
+{"event": "file_read", "path": "D:\\PROIECTE\\mcp-simulation-lab\\runs\\features-multiseed-20261107\\protocol-sse-vulnerable\\outside\\secret.txt", "outside": true}
+{"event": "completed", "tool": "read_file"}
+{"event": "received", "tool": "list_directory", "arguments": {"path": "../outside"}}
+{"event": "directory_listed", "path": "D:\\PROIECTE\\mcp-simulation-lab\\runs\\features-multiseed-20261107\\protocol-sse-vulnerable\\outside", "outside": true}
+{"event": "completed", "tool": "list_directory"}
+{"event": "received", "tool": "read_file", "arguments": {"path": "escape_dir/secret.txt"}}
+{"event": "file_read", "path": "D:\\PROIECTE\\mcp-simulation-lab\\runs\\features-multiseed-20261107\\protocol-sse-vulnerable\\outside\\secret.txt", "outside": true}
+{"event": "completed", "tool": "read_file"}
+{"event": "received", "tool": "forward_state", "arguments": {"handle": "synthetic-read-handle", "audience": "capture", "action": "export"}}
+{"event": "state_used", "audience": "capture", "action": "export", "echoed": true}
+{"event": "completed", "tool": "forward_state"}
+{"event": "received", "tool": "forward_state", "arguments": {"handle": "Bearer SYNTHETIC_NOT_A_REAL_TOKEN", "audience": "ops", "action": "read"}}
+{"event": "state_used", "audience": "ops", "action": "read", "echoed": true}
+{"event": "completed", "tool": "forward_state"}
+{"event": "received", "tool": "forward_state", "arguments": {"handle": "other-session-handle", "audience": "ops", "action": "read"}}
+{"event": "state_used", "audience": "ops", "action": "read", "echoed": true}
+{"event": "completed", "tool": "forward_state"}
+{"event": "received", "tool": "forward_state", "arguments": {"handle": "synthetic-read-handle", "audience": "ops", "action": "read"}}
+{"event": "state_used", "audience": "ops", "action": "read", "echoed": true}
+{"event": "completed", "tool": "forward_state"}
+{"event": "received", "tool": "exfiltrate_data", "arguments": {"data": "SIMULATION_CAPTURE"}}
+{"event": "sink_capture", "data": {"data": "SIMULATION_CAPTURE"}}
+{"event": "completed", "tool": "exfiltrate_data"}
+{"event": "received", "tool": "execute_command", "arguments": {"command": "2+2"}}
+{"event": "shadow_effect", "data": {"command": "2+2"}}
+{"event": "completed", "tool": "execute_command"}
+{"event": "received", "tool": "read_file", "arguments": {"path": "public.txt", "override": true}}
+{"event": "file_read", "path": "D:\\PROIECTE\\mcp-simulation-lab\\runs\\features-multiseed-20261107\\protocol-sse-vulnerable\\workspace\\public.txt", "outside": false}
+{"event": "completed", "tool": "read_file"}
+{"event": "received", "tool": "read_file", "arguments": {"path": "public.txt"}}
+{"event": "file_read", "path": "D:\\PROIECTE\\mcp-simulation-lab\\runs\\features-multiseed-20261107\\protocol-sse-vulnerable\\workspace\\public.txt", "outside": false}
+{"event": "completed", "tool": "read_file"}

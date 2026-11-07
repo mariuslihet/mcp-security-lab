@@ -1,0 +1,2 @@
+{"event": "received", "tool": "sim_calculate", "arguments": {"expression": "2+2"}}
+{"event": "completed", "tool": "sim_calculate"}

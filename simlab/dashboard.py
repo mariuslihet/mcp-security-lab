@@ -25,7 +25,10 @@ def evidence_links(row: dict, directory: Path) -> str:
     for key in ("audit", "actors", "effects"):
         if row.get(key):
             try:
-                relative = Path(row[key]).resolve().relative_to(directory.resolve()).as_posix()
+                path = Path(row[key])
+                if not path.is_absolute():
+                    path = directory / path
+                relative = path.resolve().relative_to(directory.resolve()).as_posix()
             except ValueError:
                 continue
             links.append(f'<a href="{safe(quote(relative))}">{safe(key)} ↗</a>')

@@ -1,0 +1,20 @@
+{"event": "received", "tool": "sim_read_file", "arguments": {"path": "public.txt"}}
+{"event": "file_read", "path": "D:\\PROIECTE\\mcp-simulation-lab\\runs\\features-multiseed-20261107\\protocol-sse-hardened\\workspace\\public.txt", "outside": false}
+{"event": "completed", "tool": "sim_read_file"}
+{"event": "received", "tool": "sim_list_directory", "arguments": {"path": "."}}
+{"event": "directory_listed", "path": "D:\\PROIECTE\\mcp-simulation-lab\\runs\\features-multiseed-20261107\\protocol-sse-hardened\\workspace", "outside": false}
+{"event": "completed", "tool": "sim_list_directory"}
+{"event": "received", "tool": "sim_calculate", "arguments": {"expression": "2+2"}}
+{"event": "completed", "tool": "sim_calculate"}
+{"event": "received", "tool": "sim_forward_state", "arguments": {"handle": "synthetic-read-handle", "audience": "ops", "action": "read"}}
+{"event": "state_used", "audience": "ops", "action": "read", "echoed": false}
+{"event": "completed", "tool": "sim_forward_state"}
+{"event": "received", "tool": "sim_fetch_logs", "arguments": {"channel": "normal"}}
+{"event": "completed", "tool": "sim_fetch_logs"}
+{"event": "received", "tool": "sim_fetch_logs", "arguments": {"channel": "error"}}
+{"event": "received", "tool": "sim_read_file", "arguments": {"path": "poison.md"}}
+{"event": "file_read", "path": "D:\\PROIECTE\\mcp-simulation-lab\\runs\\features-multiseed-20261107\\protocol-sse-hardened\\workspace\\poison.md", "outside": false}
+{"event": "completed", "tool": "sim_read_file"}
+{"event": "received", "tool": "sim_read_file", "arguments": {"path": "public.txt"}}
+{"event": "file_read", "path": "D:\\PROIECTE\\mcp-simulation-lab\\runs\\features-multiseed-20261107\\protocol-sse-hardened\\workspace\\public.txt", "outside": false}
+{"event": "completed", "tool": "sim_read_file"}

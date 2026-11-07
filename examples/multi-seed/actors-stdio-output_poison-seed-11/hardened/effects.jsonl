@@ -1,0 +1,2 @@
+{"event": "received", "tool": "sim_fetch_logs", "arguments": {"channel": "normal"}}
+{"event": "completed", "tool": "sim_fetch_logs"}
