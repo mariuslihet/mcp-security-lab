@@ -1,0 +1,139 @@
+"""A real stdio intermediary; optionally bridges to an actual HTTP/SSE server.
+
+Every wire envelope is recorded before transformation. A blocked call is answered
+locally and is never forwarded to the target. stdout contains JSON-RPC only.
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import sys
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from .controls import Denied, Firewall, load_config, sanitize
+
+
+class Audit:
+    def __init__(self, path: Path):
+        self.path = path
+        self.sequence = 0
+
+    def record(self, stage: str, payload: dict, **extra):
+        self.sequence += 1
+        with self.path.open("a", encoding="utf-8") as out:
+            out.write(json.dumps({"sequence": self.sequence, "stage": stage,
+                                  "payload": payload, **extra}, ensure_ascii=True) + "\n")
+
+
+@asynccontextmanager
+async def downstream(config_path: str, mode: str, url: str | None):
+    if url:
+        from mcp.client.sse import sse_client
+        from mcp.shared.message import SessionMessage
+        from mcp.types import JSONRPCMessage
+        async with sse_client(url, timeout=10) as (reader, writer):
+            async def send(payload):
+                await writer.send(SessionMessage(JSONRPCMessage.model_validate(payload)))
+
+            async def receive():
+                async for item in reader:
+                    if isinstance(item, Exception):
+                        raise item
+                    yield item.message.model_dump(mode="json", by_alias=True, exclude_none=True)
+            yield send, receive
+    else:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", mode + "_mcp", "--config", config_path,
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            stderr=sys.stderr,
+        )
+        async def send(payload):
+            proc.stdin.write((json.dumps(payload) + "\n").encode())
+            await proc.stdin.drain()
+
+        async def receive():
+            while line := await proc.stdout.readline():
+                yield json.loads(line)
+        try:
+            yield send, receive
+        finally:
+            if proc.returncode is None:
+                proc.stdin.close()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=3)
+                except TimeoutError:
+                    proc.kill()
+                    await proc.wait()
+
+
+async def run(config_path: str, mode: str, audit_path: str, url: str | None):
+    firewall = Firewall(load_config(config_path))
+    audit = Audit(Path(audit_path))
+    pending = {}
+
+    def output(payload):
+        audit.record("client_receive", payload)
+        sys.stdout.write(json.dumps(payload, ensure_ascii=True) + "\n")
+        sys.stdout.flush()
+
+    async with downstream(config_path, mode, url) as (send, receive):
+        async def requests():
+            # A thread reads the real pipe on Windows, where add_reader is unsupported.
+            while line := await asyncio.to_thread(sys.stdin.buffer.readline):
+                payload = json.loads(line)
+                audit.record("client_send", payload)
+                method = payload.get("method")
+                if mode == "hardened" and method == "tools/call":
+                    params = payload.get("params", {})
+                    try:
+                        firewall.check(params.get("name", ""), params.get("arguments", {}))
+                    except (Denied, OSError) as exc:
+                        reason = str(exc) if isinstance(exc, Denied) else "path_unavailable"
+                        audit.record("policy_block", payload, reason=reason)
+                        output({"jsonrpc": "2.0", "id": payload["id"], "result": {
+                            "isError": True, "content": [{"type": "text", "text": json.dumps({"blocked": reason})}]}})
+                        continue
+                if "id" in payload and method:
+                    pending[payload["id"]] = method
+                audit.record("server_send", payload)
+                await send(payload)
+
+        async def responses():
+            async for payload in receive():
+                audit.record("server_receive", payload)
+                method = pending.pop(payload.get("id"), None)
+                if mode == "hardened":
+                    if method == "tools/list" and "result" in payload:
+                        for tool in payload["result"].get("tools", []):
+                            tool["description"] = sanitize(tool.get("description", ""))
+                    elif method == "tools/call":
+                        payload = sanitize(payload)
+                    elif "method" in payload:
+                        payload = sanitize(payload)
+                output(payload)
+
+        tasks = [asyncio.create_task(requests()), asyncio.create_task(responses())]
+        try:
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                task.result()
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--mode", choices=["vulnerable", "hardened"], required=True)
+    parser.add_argument("--audit", required=True)
+    parser.add_argument("--sse-url")
+    args = parser.parse_args()
+    asyncio.run(run(args.config, args.mode, args.audit, args.sse_url))
+
+
+if __name__ == "__main__":
+    main()

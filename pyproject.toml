@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcp-simulation-lab"
+version = "0.1.0"
+description = "Real MCP transport and LLM actor simulation laboratory"
+requires-python = ">=3.11"
+dependencies = ["mcp==1.26.0", "httpx==0.28.1", "jsonschema==4.26.0"]
+
+[project.optional-dependencies]
+test = ["pytest==9.0.2"]
+
+[tool.setuptools.packages.find]
+include = ["simlab*", "vulnerable_mcp*", "hardened_mcp*"]
+
+[tool.setuptools.package-data]
+simlab = ["dashboard.html", "dashboard.js", "dashboard-data.js"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
