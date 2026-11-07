@@ -231,8 +231,6 @@ Combine filters for result, evaluation type, server arm, transport, seed, case, 
 
 **Pin** two checks and choose **Compare pinned checks** to review their evidence side by side. Pins remain selected when you change filters and reset when the page reloads.
 
-![Pinned evidence review](docs/images/pinned-review.png)
-
 ### Saved views and exports
 
 Save a named view to reuse filters, search, sorting, and page size. The browser can store up to 20 views for a report. Saving an existing name updates it. If browser storage is unavailable, the status identifies views as available for the current tab. File URLs and local HTTP previews may use different storage locations.
