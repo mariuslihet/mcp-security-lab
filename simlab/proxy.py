@@ -9,6 +9,7 @@ import argparse
 import asyncio
 import json
 import sys
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -19,11 +20,13 @@ class Audit:
     def __init__(self, path: Path):
         self.path = path
         self.sequence = 0
+        self.started = time.perf_counter_ns()
 
     def record(self, stage: str, payload: dict, **extra):
         self.sequence += 1
         with self.path.open("a", encoding="utf-8") as out:
             out.write(json.dumps({"sequence": self.sequence, "stage": stage,
+                                  "elapsed_ns": time.perf_counter_ns() - self.started,
                                   "payload": payload, **extra}, ensure_ascii=True) + "\n")
 
 
@@ -105,13 +108,20 @@ async def run(config_path: str, mode: str, audit_path: str, url: str | None):
                 audit.record("server_receive", payload)
                 method = pending.pop(payload.get("id"), None)
                 if mode == "hardened":
-                    if method == "tools/list" and "result" in payload:
-                        for tool in payload["result"].get("tools", []):
-                            tool["description"] = sanitize(tool.get("description", ""))
-                    elif method == "tools/call":
+                    if method in ("tools/list", "resources/list", "prompts/list") and "result" in payload:
+                        key = {"tools/list": "tools", "resources/list": "resources", "prompts/list": "prompts"}[method]
+                        for entry in payload["result"].get(key, []):
+                            entry["description"] = sanitize(entry.get("description", ""))
+                    elif method in ("tools/call", "resources/read", "prompts/get"):
                         payload = sanitize(payload)
                     elif "method" in payload:
-                        payload = sanitize(payload)
+                        if payload["method"] == "notifications/progress":
+                            # Progress tokens are opaque correlation identifiers, not prose.
+                            params = payload.get("params", {})
+                            payload = {**payload, "params": {**params,
+                                **({"message": sanitize(params["message"])} if "message" in params else {})}}
+                        elif payload["method"] != "notifications/resources/updated":
+                            payload = sanitize(payload)
                 output(payload)
 
         tasks = [asyncio.create_task(requests()), asyncio.create_task(responses())]

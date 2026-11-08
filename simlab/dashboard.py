@@ -122,6 +122,7 @@ def render_dashboard(report: dict, destination: Path) -> None:
                           f'<td>{safe(row["evaluation"])}</td><td>{safe(row.get("transport", "—"))}</td>'
                           f'<td>{safe(row.get("mode", "—"))}</td><td>{safe(row.get("seed", "—"))}</td>'
                           f'<td>{safe(task.get("status", "—"))}</td><td><span class="badge {status}">{status.upper()}</span></td>'
+                          f'<td class="review-cell">Unreviewed</td>'
                           f'<td><div class="actions"><button class="inspect" data-evidence="evidence-{index}" aria-label="Inspect {safe(label)}">Inspect ↗</button>'
                           f'<button class="pin-check" data-index="{index}" aria-label="Pin {safe(label)}" aria-pressed="false">Pin</button></div></td></tr>')
         deputy = row.get("deputy", {})
@@ -172,8 +173,13 @@ def render_dashboard(report: dict, destination: Path) -> None:
             compact["error"] = True
         comparison_data["rows"].append(compact)
     encoded_data = json.dumps(comparison_data, ensure_ascii=True).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+    identity = {"model": report["model"], "experiment": experiment, "started_at": report.get("started_at"),
+                "rows": [{key: value for key, value in row.items() if key not in ("audit", "actors", "effects")}
+                         for row in rows]}
+    report_key = hashlib.sha256(json.dumps(identity, sort_keys=True, ensure_ascii=True).encode()).hexdigest()[:20]
     slots = {"CARDS": tiles, "MODEL": safe(report["model"]["model"]), "ROWS": "".join(table_rows),
-             "RUN_DATA": encoded_data, "RUN_KEY": hashlib.sha256(encoded_data.encode()).hexdigest()[:20],
+             "RUN_DATA": encoded_data, "RUN_KEY": report_key,
+             "LEGACY_RUN_KEY": hashlib.sha256(encoded_data.encode()).hexdigest()[:20],
              "SCRIPT": Path(__file__).with_name("dashboard.js").read_text(encoding="utf-8"),
              "DATA_SCRIPT": Path(__file__).with_name("dashboard-data.js").read_text(encoding="utf-8"),
              "TEMPLATES": "".join(templates), "CHARTS": "".join(chart_rows) or '<p class="empty">No live case comparisons yet.</p>',

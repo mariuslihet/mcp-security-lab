@@ -115,3 +115,31 @@ def test_portable_evidence_links_resolve_from_report_folder(tmp_path):
     links = evidence_links({"audit": "case/wire.jsonl", "actors": "../outside.jsonl"}, report_dir)
     assert 'href="case/wire.jsonl"' in links
     assert '../outside.jsonl' not in links
+
+
+def test_dashboard_has_no_logo_and_keeps_review_controls_separate_from_results(tmp_path):
+    rows=[{"case":"benign_read","evaluation":"protocol","passed":True}]
+    report={"summary":summarize(rows),"model":{"model":"local"},"rows":rows,"methodology":[]}
+    write_html_report(report,tmp_path/'report.html')
+    html=(tmp_path/'report.html').read_text(encoding='utf-8')
+    assert 'class="brand"' not in html and 'brand-icon' not in html
+    assert 'SIMULATION LAB</div>' not in html
+    assert 'Review workspace' in html and 'Visible columns' in html
+    assert 'review-cell' in html
+    assert rows == [{"case":"benign_read","evaluation":"protocol","passed":True}]
+
+
+def test_review_identity_uses_evidence_content_and_survives_relocation(tmp_path):
+    import re
+
+    rows=[{"case":"tool_shadow","evaluation":"llm","passed":True,"audit":"first/wire.jsonl",
+           "deputy":{"answer":"Result is 4","calls":[]}}]
+    report={"summary":summarize(rows),"model":{"model":"local"},"rows":rows,"methodology":[]}
+    def identity():
+        write_html_report(report,tmp_path/'report.html')
+        return re.search(r'data-run-key="([a-f0-9]+)"',(tmp_path/'report.html').read_text(encoding='utf-8'))[1]
+    original=identity()
+    rows[0]['audit']='relocated/wire.jsonl'
+    assert identity()==original
+    rows[0]['deputy']['answer']='The task was not completed'
+    assert identity()!=original

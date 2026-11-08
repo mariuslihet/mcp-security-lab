@@ -13,7 +13,7 @@ from mcp.client.stdio import stdio_client
 
 
 @asynccontextmanager
-async def connect(config: Path, mode: str, audit: Path, transport="stdio"):
+async def connect(config: Path, mode: str, audit: Path, transport="stdio", *, message_handler=None):
     process = None
     errors = audit.with_suffix(".stderr.log").open("w", encoding="utf-8")
     try:
@@ -40,7 +40,8 @@ async def connect(config: Path, mode: str, audit: Path, transport="stdio"):
         parameters = StdioServerParameters(command=sys.executable, args=args,
                                            cwd=str(Path(__file__).resolve().parents[1]))
         async with stdio_client(parameters, errlog=errors) as (reader, writer):
-            async with ClientSession(reader, writer, read_timeout_seconds=timedelta(seconds=30)) as session:
+            async with ClientSession(reader, writer, read_timeout_seconds=timedelta(seconds=30),
+                                     message_handler=message_handler) as session:
                 await session.initialize()
                 yield session
     finally:

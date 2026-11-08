@@ -46,7 +46,49 @@ function compare(current,reference){
   }
   return {current:stats(current.rows),reference:stats(reference.rows),currentScope:leftScope,referenceScope:rightScope,differences,groups};
 }
+function parseQuery(query){
+  const tokens=[];let token='',quoted=false;
+  for(const character of query.trim()){
+    if(character==='"'){quoted=!quoted;token+=character;}
+    else if(/\s/.test(character)&&!quoted){if(token){tokens.push(token);token='';}}
+    else token+=character;
+  }
+  if(quoted)throw new Error('Close the quotation mark to finish your search.');
+  if(token)tokens.push(token);
+  const allowed=['case','tool','seed','transport','mode','result','evaluation','outcome','review','note'];
+  return tokens.map(raw=>{
+    const exclude=raw.startsWith('-');if(exclude)raw=raw.slice(1);
+    const colon=raw.indexOf(':');let field=null;
+    if(colon>0){field=raw.slice(0,colon).toLowerCase();raw=raw.slice(colon+1);if(!allowed.includes(field))throw new Error('Unknown search field: '+field);}
+    if(raw.startsWith('"')&&raw.endsWith('"'))raw=raw.slice(1,-1);
+    if(!raw||raw.includes('"'))throw new Error('Use a word or a quoted phrase after each search field.');
+    return {field,value:raw.toLowerCase(),exclude};
+  });
+}
+function matchesQuery(fields,terms){
+  const exact=new Set(['seed','transport','mode','result','evaluation','outcome','review']);
+  return terms.every(term=>{
+    const haystack=String(term.field?fields[term.field]??'':Object.values(fields).join(' ')).toLowerCase();
+    const match=term.field&&exact.has(term.field)?haystack===term.value:haystack.includes(term.value);
+    return term.exclude?!match:match;
+  });
+}
+function cleanViewState(state){
+  if(!state||typeof state!=='object'||Array.isArray(state))throw new Error('Invalid saved view state.');
+  const clean={};for(const key of ['result','evaluation','mode','transport','seed','case','outcome','search','sort','page-size','review-filter']){
+    if(Object.hasOwn(state,key)){if(typeof state[key]!=='string'||state[key].length>500)throw new Error('Invalid saved view preference.');clean[key]=state[key];}}
+  return clean;
+}
+function validateWorkspace(value,reportKey,rowCount){
+  if(!value||value.version!==1||value.reportKey!==reportKey)throw new Error('Choose a review workspace exported from this report.');
+  if(!Array.isArray(value.notes)||!Array.isArray(value.views)||!Array.isArray(value.pins)||!Array.isArray(value.hiddenColumns)||value.notes.length>rowCount||value.views.length>20||value.pins.length>2)throw new Error('Invalid review workspace structure.');
+  const validIndex=id=>Number.isInteger(id)&&id>=0&&id<rowCount,seen=new Set();
+  const notes=value.notes.map(entry=>{if(!entry||!validIndex(entry.index)||seen.has(entry.index)||!['unreviewed','followup','resolved'].includes(entry.status)||typeof entry.note!=='string'||entry.note.length>4000)throw new Error('Invalid review note.');seen.add(entry.index);return {index:entry.index,status:entry.status,note:entry.note};});
+  const ids=new Set();const views=value.views.map(view=>{if(!view||typeof view.id!=='string'||!view.id||view.id.length>80||ids.has(view.id)||typeof view.name!=='string'||!view.name.trim()||view.name.length>80)throw new Error('Invalid saved view.');ids.add(view.id);return {id:view.id,name:view.name,state:cleanViewState(view.state)};});
+  if(value.pins.some(id=>!validIndex(id))||new Set(value.pins).size!==value.pins.length||value.hiddenColumns.some(index=>!Number.isInteger(index)||index<1||index>7))throw new Error('Invalid pinned checks or columns.');
+  return {version:1,reportKey,notes,views,pins:[...value.pins],hiddenColumns:[...new Set(value.hiddenColumns)],state:cleanViewState(value.state)};
+}
 function csvCell(value){value=String(value);if(/^[=+@\-\t\r]/.test(value))value="'"+value;return '"'+value.replace(/"/g,'""')+'"';}
-const api={validateReport,stats,scope,compare,csvCell};
+const api={validateReport,stats,scope,compare,csvCell,parseQuery,matchesQuery,validateWorkspace};
 if(typeof module!=='undefined'&&module.exports)module.exports=api;else root.SimlabData=api;
 })(globalThis);
