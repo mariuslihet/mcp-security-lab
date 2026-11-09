@@ -14,7 +14,8 @@ from mcp.server.lowlevel.helper_types import ReadResourceContents
 from .controls import DENSE_TOOLS, DESCRIPTIONS, SCHEMAS, Denied, Firewall, calculate, load_config, resolve_path, sanitize
 from .fixtures import RESOURCE_URI
 from .state import IncidentStore
-from .mcp_features import NativeFeatures, READ_ONLY_TOOLS, SimulationServer, output_schema
+from .mcp_features import CATALOG_URI, CLIENT_REQUEST_TOOLS, NativeFeatures, READ_ONLY_TOOLS, SimulationServer, output_schema
+from .bidirectional import BidirectionalFeatures
 
 
 def create_server(config: dict, hardened: bool) -> Server:
@@ -33,6 +34,7 @@ def create_server(config: dict, hardened: bool) -> Server:
 
     store = IncidentStore(config, journal)
     native = NativeFeatures(server, store, config, hardened, journal)
+    bidirectional = BidirectionalFeatures(server, store, config, hardened, journal)
     if config.get("dense"):
         native.install()
 
@@ -47,11 +49,20 @@ def create_server(config: dict, hardened: bool) -> Server:
 
     @server.list_resources()
     async def list_resources():
-        return [types.Resource(name="operations-status", uri=RESOURCE_URI,
-                               description="Current operational status and handoff notes.", mimeType="text/plain")] if config.get("dense") else []
+        if not config.get("dense"):
+            return []
+        native.register_session()
+        resources = [types.Resource(name="operations-status", uri=RESOURCE_URI,
+                                    description="Current operational status and handoff notes.", mimeType="text/plain")]
+        if native.catalog_profile == "standard":
+            resources.append(types.Resource(name="incident-catalog", uri=CATALOG_URI,
+                                            description="Visible incident resource links.", mimeType="application/json"))
+        return resources
 
     @server.read_resource()
     async def read_resource(uri):
+        if config.get("dense") and str(uri) == CATALOG_URI:
+            return [ReadResourceContents(native.read_catalog(), mime_type="application/json")]
         if config.get("dense") and str(uri).startswith("lab://incidents/"):
             return [ReadResourceContents(native.read_incident(uri), mime_type="application/json")]
         if not config.get("dense") or str(uri) != RESOURCE_URI:
@@ -63,9 +74,14 @@ def create_server(config: dict, hardened: bool) -> Server:
 
     @server.list_prompts()
     async def list_prompts():
-        return [types.Prompt(name="incident_review", description="Review operational status and incident handoff.", arguments=[]),
-                types.Prompt(name="incident_triage", description="Review a permitted incident and plan its prerequisites.",
-                             arguments=[types.PromptArgument(name="record_id", description="Incident identifier", required=True)])] if config.get("dense") else []
+        if not config.get("dense"):
+            return []
+        native.register_session()
+        prompts = [types.Prompt(name="incident_review", description="Review operational status and incident handoff.", arguments=[])]
+        if native.catalog_profile == "standard":
+            prompts.append(types.Prompt(name="incident_triage", description="Review a permitted incident and plan its prerequisites.",
+                                       arguments=[types.PromptArgument(name="record_id", description="Incident identifier", required=True)]))
+        return prompts
 
     @server.get_prompt()
     async def get_prompt(name, arguments):
@@ -81,9 +97,12 @@ def create_server(config: dict, hardened: bool) -> Server:
 
     @server.list_tools()
     async def list_tools() -> list[types.Tool]:
+        native.register_session()
         result = []
         for name, input_schema in SCHEMAS.items():
             if name in DENSE_TOOLS and not config.get("dense"):
+                continue
+            if not native.tool_enabled(name):
                 continue
             if hardened and name == "execute_command":
                 continue
@@ -95,8 +114,10 @@ def create_server(config: dict, hardened: bool) -> Server:
                                      inputSchema=input_schema, outputSchema=output_schema(name),
                                      annotations=types.ToolAnnotations(readOnlyHint=name in READ_ONLY_TOOLS,
                                          destructiveHint=name not in READ_ONLY_TOOLS,
-                                         idempotentHint=name in READ_ONLY_TOOLS or hardened and name in ("update_record", "batch_update_records"),
-                                         openWorldHint=False)))
+                                         idempotentHint=name in READ_ONLY_TOOLS - {"sample_incident", "request_incident_input"}
+                                             or name == "set_catalog_profile"
+                                             or hardened and name in ("update_record", "batch_update_records", "guided_update_record"),
+                                         openWorldHint=name in CLIENT_REQUEST_TOOLS)))
         return result
 
     @server.call_tool(validate_input=False)
@@ -108,6 +129,8 @@ def create_server(config: dict, hardened: bool) -> Server:
                 raise Denied("unknown_tool")
             if name in DENSE_TOOLS and not config.get("dense"):
                 raise Denied("tool_not_enabled")
+            if not native.tool_enabled(name):
+                raise Denied("tool_disabled_by_catalog")
             if config.get("latency_ms", 0):
                 await asyncio.sleep(config["latency_ms"] / 1000)
             transient = fault(name)
@@ -136,6 +159,28 @@ def create_server(config: dict, hardened: bool) -> Server:
                     value = {"status": "state_used", **arguments, "synthetic_secret": "SIMULATION_SESSION_SECRET"}
                 journal("state_used", audience=arguments["audience"], action=arguments["action"],
                         echoed=not hardened)
+            elif name == "set_catalog_profile":
+                value = await native.set_catalog(arguments)
+            elif name == "analyze_dependencies":
+                value = store.analyze_dependencies(arguments["record_id"], hardened)
+            elif name == "incident_bundle":
+                plan = store.plan_resolution(arguments["record_id"], hardened)
+                value = {"record": store.read(arguments["record_id"]),
+                         "resources": ["lab://incidents/" + step["record"]["id"] for step in plan["steps"]]}
+            elif name == "inspect_client_roots":
+                value = await bidirectional.roots()
+            elif name == "sample_incident":
+                value = await bidirectional.sample(arguments["record_id"])
+            elif name == "request_incident_input":
+                value = await bidirectional.review(arguments["record_id"])
+            elif name == "guided_update_record":
+                value = await bidirectional.guided_update(arguments)
+                if "record" in value:
+                    await native.notify_changed(value)
+                    if not value["deduplicated"]:
+                        uncertain = fault("guided_update_record_after_commit")
+                        if uncertain:
+                            return uncertain
             elif name == "list_records":
                 value = store.list_records(arguments, hardened)
             elif name == "plan_resolution":
@@ -176,7 +221,11 @@ def create_server(config: dict, hardened: bool) -> Server:
             await native.log_tool(wire_name, success=True)
             if hardened:
                 value = sanitize(value)
-            return types.CallToolResult(content=[types.TextContent(type="text", text=json.dumps(value))], structuredContent=value)
+            content = [types.TextContent(type="text", text=json.dumps(value))]
+            if name == "incident_bundle":
+                content += [types.ResourceLink(type="resource_link", name=uri.rsplit("/", 1)[-1], uri=uri,
+                                               mimeType="application/json") for uri in value["resources"]]
+            return types.CallToolResult(content=content, structuredContent=value)
         except asyncio.CancelledError:
             journal("request_cancelled", tool=wire_name)
             raise

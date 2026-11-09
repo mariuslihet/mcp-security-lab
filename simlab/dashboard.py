@@ -22,7 +22,7 @@ def percent(value) -> str:
 
 def evidence_links(row: dict, directory: Path) -> str:
     links = []
-    for key in ("audit", "actors", "effects"):
+    for key in ("audit", "actors", "effects", "client", "manifest", "state_file"):
         if row.get(key):
             try:
                 path = Path(row[key])
@@ -35,10 +35,79 @@ def evidence_links(row: dict, directory: Path) -> str:
     return "".join(links)
 
 
+def capability_feature(row: dict) -> str:
+    if row.get("feature"):
+        return str(row["feature"])
+    case = row.get("case", "")
+    if case.startswith("mcp_"):
+        for token, title in (("completion", "Completions"), ("prompt", "Prompts"), ("progress", "Progress notifications"),
+                             ("catalog", "Dynamic catalogs"), ("resource_link", "Resource links"), ("dependency_analysis", "Dependency analysis"),
+                             ("logging", "Server logging"), ("cancellation", "Cancellation and recovery"),
+                             ("structured", "Structured output"), ("annotations", "Tool annotations"),
+                             ("capabilities", "Capability negotiation")):
+            if token in case:
+                return title
+        return "Resources and subscriptions"
+    return "Stateful workflows" if row.get("suite") == "dense" else "Core isolation"
+
+
+def graph_overview(rows):
+    from .dependency_graph import validate_graph
+    row = next((item for item in rows if item.get("graph_definition")), None)
+    if row is None:
+        return ""
+    graph = row["graph_definition"]
+    try:
+        layers = validate_graph(graph)
+    except (TypeError, ValueError):
+        return '<p class="helper">Graph topology unavailable: invalid recorded graph.</p>'
+    width, height = max(720, len(layers) * 150 + 40), max(180, max(map(len, layers)) * 52 + 64)
+    positions = {key: (40 + level * 150, 42 + index * 52) for level, layer in enumerate(layers) for index, key in enumerate(layer)}
+    paths, nodes = [], []
+    for key, parents in graph.items():
+        x, y = positions[key]
+        for parent in parents:
+            px, py = positions[parent]
+            paths.append(f'<path d="M {px + 96} {py + 14} L {x - 4} {y + 14}" fill="none" stroke="#61758b" stroke-width="1" marker-end="url(#graph-arrow)"/>')
+        nodes.append(f'<g><rect x="{x}" y="{y}" width="96" height="28" rx="5" fill="#152331" stroke="#83e5c3"/>'
+                     f'<text x="{x + 48}" y="{y + 19}" fill="#e6edf4" text-anchor="middle" font-size="12">{safe(key)}</text></g>')
+    edges = sum(map(len, graph.values()))
+    return (f'<article class="panel"><h3>Generated dependency topology</h3><p class="helper">{len(graph)} nodes · {edges} edges · '
+            f'{len(layers)} layers · seed {safe(row.get("campaign_seed", "not recorded"))}. Arrows point from prerequisites to dependents. '
+            'This is the recorded initial topology; inspect individual checks for state changes.</p>'
+            '<div class="scroll" tabindex="0" role="region" aria-label="Generated dependency graph">'
+            f'<svg id="dependency-topology" role="img" aria-label="Dependency graph with {len(graph)} nodes and {len(layers)} layers" '
+            f'width="{width}" height="{height}" viewBox="0 0 {width} {height}">'
+            '<defs><marker id="graph-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto">'
+            '<path d="M 0 0 L 10 5 L 0 10 z" fill="#61758b"/></marker></defs>' + "".join(paths + nodes) + '</svg></div></article>')
+
+
 def render_dashboard(report: dict, destination: Path) -> None:
     summary, rows = report["summary"], report["rows"]
     live = [row for row in rows if row.get("evaluation") == "llm"]
     protocol = [row for row in rows if row.get("evaluation") == "protocol"]
+    feature_groups = {}
+    for row in protocol:
+        feature_groups.setdefault(capability_feature(row), []).append(row)
+    capability_rows = []
+    for feature, group in sorted(feature_groups.items()):
+        arms = []
+        for mode in ("vulnerable", "hardened"):
+            checks = [row for row in group if row.get("mode") == mode]
+            arms.append(f'{sum(bool(row["passed"]) for row in checks)}/{len(checks)}' if checks else "Not run")
+        transports = ", ".join(sorted({row["transport"] for row in group if row.get("transport")})) or "Not recorded"
+        capability_rows.append(f'<tr><th scope="row">{safe(feature)}</th><td>{safe(transports)}</td>'
+                               f'<td>{safe(arms[0])}</td><td>{safe(arms[1])}</td>'
+                               f'<td>{sum(not row["passed"] for row in group)}</td></tr>')
+    performance_rows = []
+    for operation in report.get("performance", {}).get("capabilities", []):
+        direction = "Client request" if operation.get("direction") == "client_to_server" else "Server callback"
+        values = [operation.get("capability", ""), operation.get("mode", ""), operation.get("transport", ""), direction,
+                  operation.get("completed", 0), operation.get("pending", 0), operation.get("cancelled", 0),
+                  operation.get("p50_ms") if operation.get("p50_ms") is not None else "—",
+                  operation.get("p95_ms") if operation.get("p95_ms") is not None else "—", operation.get("logical_bytes", 0)]
+        performance_rows.append('<tr><th scope="row">' + safe(values[0]) + '</th>' +
+                                ''.join('<td>' + safe(value) + '</td>' for value in values[1:]) + '</tr>')
     passed = sum(bool(row["passed"]) for row in rows)
     failed = len(rows) - passed
     baseline = [row for row in live if row.get("mode") == "vulnerable" and "exploit_observed" in row]
@@ -137,10 +206,16 @@ def render_dashboard(report: dict, destination: Path) -> None:
         rubric = f'<h3>Task rubric · {safe(task.get("status", "ungraded"))}</h3><ul class="rubric">{checks}</ul><p class="muted">{safe(task.get("limitation", ""))}</p>' if task else ""
         answer = f'<h3>Deputy answer</h3><p class="answer">{safe(deputy.get("answer", ""))}</p>' if deputy else ""
         error = f'<p class="error-box">{safe(row["error"])}</p>' if "error" in row else ""
+        callback_steps = []
+        for callback in row.get("client_requests", []):
+            callback_steps.append(f'<li><b>{safe(callback.get("operation", "Client request"))}</b>'
+                f'<p class="muted">{safe(callback.get("duration_seconds", ""))} seconds · controlled simulation client</p>'
+                f'<details><summary>Request and client response</summary><pre>{safe(json.dumps(callback, indent=2))}</pre></details></li>')
+        callback_trace = f'<h3>Server-to-client request trace</h3><ol class="sequence">{"".join(callback_steps)}</ol>' if callback_steps else ""
         templates.append(f'<template id="evidence-{index}"><h2>{safe(label)}</h2>{error}'
                          f'<div class="evidence-links">{evidence_links(row, destination.parent)}</div>'
                          f'<p class="answer">{safe(row.get("intent", "Fixed protocol probe; inspect the recorded arguments and response below."))}</p>'
-                         f'{rubric}{answer}<h3>Tool-call sequence</h3><ol class="sequence">{"".join(steps)}</ol>'
+                         f'{rubric}{answer}{callback_trace}<h3>Tool-call sequence</h3><ol class="sequence">{"".join(steps)}</ol>'
                          f'{"" if steps else "<p class=muted>No deputy tool-call sequence for this check.</p>"}'
                          f'<details><summary>Full recorded evidence</summary><pre>{safe(json.dumps(row, indent=2, ensure_ascii=True))}</pre></details></template>')
 
@@ -161,6 +236,11 @@ def render_dashboard(report: dict, destination: Path) -> None:
               "Model": report["model"]["model"], "Seeds": ", ".join(map(str, experiment.get("seeds", seeds))) or "Not run",
               "Turn budget": experiment.get("max_turns", "Not recorded"),
               "Task requirement": "Strict completion" if experiment.get("require_task_success") else "Reported separately",
+              "Campaign steps": experiment.get("campaign_steps", 0),
+              "Campaign seed": experiment.get("campaign_seed", "Not recorded") if experiment.get("campaign_steps") else "Not run",
+              "Campaign graph nodes": experiment.get("campaign_graph_nodes", 0),
+              "Campaign graph width": experiment.get("campaign_graph_width", 0),
+              "Campaign max concurrency": experiment.get("campaign_max_concurrency", "Not recorded") if experiment.get("campaign_steps") else "Not run",
               "Started (UTC)": report.get("started_at", "Not recorded"), "Saved (UTC)": report.get("updated_at", "Not recorded")}
     # Embed only the comparison fields, never duplicate prompts or secrets in script data.
     comparison_data = {"schema_version": report.get("schema_version", 2), "model": report["model"],
@@ -174,11 +254,14 @@ def render_dashboard(report: dict, destination: Path) -> None:
         comparison_data["rows"].append(compact)
     encoded_data = json.dumps(comparison_data, ensure_ascii=True).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
     identity = {"model": report["model"], "experiment": experiment, "started_at": report.get("started_at"),
-                "rows": [{key: value for key, value in row.items() if key not in ("audit", "actors", "effects")}
+                "rows": [{key: value for key, value in row.items() if key not in ("audit", "actors", "effects", "client", "manifest", "state_file")}
                          for row in rows]}
     report_key = hashlib.sha256(json.dumps(identity, sort_keys=True, ensure_ascii=True).encode()).hexdigest()[:20]
     slots = {"CARDS": tiles, "MODEL": safe(report["model"]["model"]), "ROWS": "".join(table_rows),
              "RUN_DATA": encoded_data, "RUN_KEY": report_key,
+             "CAPABILITIES": "".join(capability_rows) or '<tr><td colspan="5">No protocol capabilities exercised yet.</td></tr>',
+             "PERFORMANCE": "".join(performance_rows) or '<tr><td colspan="10">No wire timings recorded.</td></tr>',
+             "GRAPH_OVERVIEW": graph_overview(rows),
              "LEGACY_RUN_KEY": hashlib.sha256(encoded_data.encode()).hexdigest()[:20],
              "SCRIPT": Path(__file__).with_name("dashboard.js").read_text(encoding="utf-8"),
              "DATA_SCRIPT": Path(__file__).with_name("dashboard-data.js").read_text(encoding="utf-8"),
@@ -187,7 +270,9 @@ def render_dashboard(report: dict, destination: Path) -> None:
              "MATRIX": "".join(matrix) or '<tr><td colspan="5">No seed outcomes recorded.</td></tr>',
              "METHOD": "".join(f'<li>{safe(item)}</li>' for item in report["methodology"]),
              "STATUS": safe(report.get("status", "completed")),
-             "PROGRESS": "Partial results; reload to see saved progress." if report.get("status") == "running" else "Evaluation finished. This is a saved snapshot.",
+             "PROGRESS": "Partial results; reload to see saved progress." if report.get("status") == "running" else
+                 "Stopped at a verified campaign checkpoint; resume to execute remaining actions." if report.get("status") == "checkpointed" else
+                 "Evaluation finished. This is a saved snapshot.",
              "CONFIG": "".join(f'<div><dt>{safe(key)}</dt><dd>{safe(value)}</dd></div>' for key, value in config.items()),
              "NOTICES": "".join(notices), "TOTAL": str(len(rows)), "PASSED": str(passed), "FAILED": str(failed),
              "DONUT": f'{100 * passed / len(rows):.2f}' if rows else "0",

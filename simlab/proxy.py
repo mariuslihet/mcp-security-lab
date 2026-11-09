@@ -106,7 +106,8 @@ async def run(config_path: str, mode: str, audit_path: str, url: str | None):
         async def responses():
             async for payload in receive():
                 audit.record("server_receive", payload)
-                method = pending.pop(payload.get("id"), None)
+                # JSON-RPC request IDs are independent in the two directions.
+                method = pending.pop(payload.get("id"), None) if "method" not in payload else None
                 if mode == "hardened":
                     if method in ("tools/list", "resources/list", "prompts/list") and "result" in payload:
                         key = {"tools/list": "tools", "resources/list": "resources", "prompts/list": "prompts"}[method]

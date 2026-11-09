@@ -73,3 +73,9 @@ def test_experiment_arguments_reject_overwriting_seeds_and_zero_budget():
     assert positive_int("3") == 3
     with pytest.raises(argparse.ArgumentTypeError):
         positive_int("0")
+
+
+def test_infrastructure_errors_preserve_nested_leaf_failures():
+    from simlab.evaluation import exception_message
+    message = exception_message(ExceptionGroup("transport", [ValueError("invalid response"), ExceptionGroup("nested", [TimeoutError("callback deadline")])]))
+    assert "ValueError: invalid response" in message and "TimeoutError: callback deadline" in message

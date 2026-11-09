@@ -14,9 +14,15 @@ from .controls import Denied
 
 
 INCIDENT_TEMPLATE = "lab://incidents/{record_id}"
+CATALOG_URI = "lab://incidents/catalog"
+COMPACT_DISABLED = {"update_record", "batch_update_records", "guided_update_record", "preview_updates",
+                    "sample_incident", "request_incident_input", "inspect_client_roots"}
 LOG_LEVELS = ("debug", "info", "notice", "warning", "error", "critical", "alert", "emergency")
+CLIENT_REQUEST_TOOLS = {"inspect_client_roots", "sample_incident", "request_incident_input", "guided_update_record"}
 READ_ONLY_TOOLS = {"read_file", "list_directory", "fetch_logs", "calculate", "search_documents",
-                   "get_record", "list_records", "plan_resolution", "preview_updates"}
+                   "get_record", "list_records", "plan_resolution", "preview_updates", "inspect_client_roots",
+                   "sample_incident", "request_incident_input"}
+READ_ONLY_TOOLS |= {"analyze_dependencies", "incident_bundle"}
 RECORD_SCHEMA = {"type": "object", "required": ["id", "status", "version"], "properties": {
     "id": {"type": "string"}, "status": {"enum": ["open", "investigating", "resolved"]},
     "version": {"type": "integer", "minimum": 1}}}
@@ -49,7 +55,20 @@ def output_schema(name):
         "preview_updates": {"records": records, "would_commit": {"type": "boolean"}},
         "list_records": {"records": records, "total": {"type": "integer"}, "next_cursor": {"type": "string"}},
         "plan_resolution": {"record_id": {"type": "string"}, "steps": steps},
+        "analyze_dependencies": {"record_id": {"type": "string"}, "node_count": {"type": "integer"},
+            "edge_count": {"type": "integer"}, "layers": {"type": "array"}, "critical_path": {"type": "array"},
+            "unresolved": {"type": "array"}},
+        "incident_bundle": {"record": RECORD_SCHEMA, "resources": {"type": "array", "items": {"type": "string"}}},
+        "set_catalog_profile": {"profile": {"enum": ["standard", "compact"]}, "changed": {"type": "boolean"}},
+        "inspect_client_roots": {"roots": {"type": "array"}, "workspace_advertised": {"type": "boolean"}},
+        "sample_incident": {"record_id": {"type": "string"}, "summary": {"type": "string"}, "model": {"type": "string"}},
+        "request_incident_input": {"record_id": {"type": "string"}, "action": {"enum": ["accept", "decline", "cancel"]},
+                                   "content": {"type": ["object", "null"]}},
     }.get(name)
+    if name == "guided_update_record":
+        return {"type": "object", "oneOf": [
+            {"required": ["record", "deduplicated"], "properties": {"record": RECORD_SCHEMA, "deduplicated": {"type": "boolean"}}},
+            {"required": ["committed", "action"], "properties": {"committed": {"const": False}, "action": {"enum": ["decline", "cancel"]}}}]}
     return {"type": "object", "properties": fields, "required": list(fields)} if fields else {"type": "object"}
 
 
@@ -60,6 +79,10 @@ class SimulationServer(Server):
         result = super().get_capabilities(notification_options, experimental_capabilities)
         if result.resources is not None:
             result.resources.subscribe = types.SubscribeRequest in self.request_handlers
+        if types.SubscribeRequest in self.request_handlers:
+            for capability in (result.resources, result.tools, result.prompts):
+                if capability is not None:
+                    capability.listChanged = True
         return result
 
 
@@ -69,6 +92,44 @@ class NativeFeatures:
         self.hardened, self.journal = hardened, journal
         self.subscriptions = weakref.WeakKeyDictionary()
         self.logging_levels = weakref.WeakKeyDictionary()
+        self.clients = weakref.WeakSet()
+        self.catalog_profile = config.get("initial_catalog_profile", "standard")
+        self.catalog_lock = asyncio.Lock()
+
+    def register_session(self):
+        self.clients.add(self.server.request_context.session)
+
+    def tool_enabled(self, name):
+        return self.catalog_profile != "compact" or name not in COMPACT_DISABLED
+
+    def read_catalog(self):
+        if self.catalog_profile == "compact":
+            raise Denied("resource_not_available")
+        records = json.loads(self.store.path.read_text(encoding="utf-8"))["records"]
+        return json.dumps({"incidents": ["lab://incidents/" + key for key in sorted(records)
+            if not self.hardened or key in self.config["allowed_records"]]})
+
+    async def set_catalog(self, arguments):
+        async with self.catalog_lock:
+            return await self._set_catalog(arguments)
+
+    async def _set_catalog(self, arguments):
+        if arguments["profile"] not in ("standard", "compact"):
+            raise Denied("catalog_profile_invalid")
+        changed = self.catalog_profile != arguments["profile"]
+        self.catalog_profile = arguments["profile"]
+        self.register_session()
+        if changed:
+            self.journal("catalog_profile_changed", profile=self.catalog_profile)
+            for session in list(self.clients):
+                try:
+                    with anyio.move_on_after(1):
+                        await session.send_tool_list_changed()
+                        await session.send_resource_list_changed()
+                        await session.send_prompt_list_changed()
+                except (anyio.BrokenResourceError, anyio.ClosedResourceError):
+                    self.clients.discard(session)
+        return {"profile": self.catalog_profile, "changed": changed}
 
     def record_id(self, uri):
         match = re.fullmatch(r"lab://incidents/([A-Z]+-[0-9]{3})", str(uri))
@@ -86,6 +147,8 @@ class NativeFeatures:
         return json.dumps({"record": self.store.read(key)})
 
     def triage_prompt(self, arguments):
+        if self.catalog_profile == "compact":
+            raise Denied("prompt_not_available")
         if not isinstance(arguments, dict) or set(arguments) != {"record_id"} or not isinstance(arguments["record_id"], str):
             raise Denied("prompt_arguments_denied")
         key = self.record_id("lab://incidents/" + arguments["record_id"])
@@ -103,11 +166,13 @@ class NativeFeatures:
 
         @self.server.list_resource_templates()
         async def templates():
+            self.register_session()
             return [types.ResourceTemplate(name="incident-record", uriTemplate=INCIDENT_TEMPLATE,
                     description="A current incident record, subject to session permissions.", mimeType="application/json")]
 
         @self.server.subscribe_resource()
         async def subscribe(uri):
+            self.register_session()
             self.record_id(uri)
             session = self.server.request_context.session
             self.subscriptions.setdefault(session, set()).add(str(uri))
@@ -122,7 +187,7 @@ class NativeFeatures:
         @self.server.completion()
         async def complete(ref, argument, context):
             valid = ((isinstance(ref, types.ResourceTemplateReference) and ref.uri == INCIDENT_TEMPLATE)
-                     or (isinstance(ref, types.PromptReference) and ref.name == "incident_triage"))
+                     or (isinstance(ref, types.PromptReference) and ref.name == "incident_triage" and self.catalog_profile == "standard"))
             if not valid or argument.name != "record_id" or len(argument.value) > 256:
                 raise Denied("completion_reference_denied")
             data = json.loads(self.store.path.read_text(encoding="utf-8"))["records"]

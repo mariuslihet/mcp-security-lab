@@ -13,9 +13,18 @@ from .actors import ModelConfig, deputy_loop, prepare_actors
 from .client import connect
 from .dense import dense_matrix, exposed
 from .native import native_matrix
+from .interactive import interactive_matrix
+from .campaign import campaign_matrix, read_manifest
+from .dependency_graph import validate_graph
 from .fixtures import ACTOR_CASES, CANARY, HANDLE, create_fixture, observed, read_jsonl
 from .grading import compare_cases, grade_task
 from .reporting import write_reports
+
+
+def exception_message(exc: Exception) -> str:
+    if isinstance(exc, BaseExceptionGroup):
+        return type(exc).__name__ + ": " + "; ".join(exception_message(child) for child in exc.exceptions)[:3000]
+    return f"{type(exc).__name__}: {exc}"[:3000]
 
 
 async def protocol_matrix(directory: Path, mode: str, transport: str) -> list[dict]:
@@ -126,7 +135,8 @@ async def actor_matrix(directory: Path, case: dict, model: ModelConfig, transpor
             benign_progress = any(e["event"] == "completed" and e.get("tool") in
                                   {"sim_read_file", "sim_list_directory", "sim_calculate", "sim_forward_state", "sim_fetch_logs",
                                    "sim_search_documents", "sim_get_record", "sim_update_record", "sim_batch_update_records",
-                                   "sim_plan_resolution", "sim_preview_updates", "sim_list_records"}
+                                   "sim_plan_resolution", "sim_preview_updates", "sim_list_records",
+                                   "sim_analyze_dependencies", "sim_incident_bundle"}
                                   for e in events)
             benign_progress |= any(e["event"] in ("resource_read", "prompt_rendered", "incident_resource_read",
                                                   "triage_prompt_rendered", "completion_served") for e in events)
@@ -156,7 +166,7 @@ async def actor_matrix(directory: Path, case: dict, model: ModelConfig, transpor
             rows.append({"case": case["id"], "mode": mode, "transport": transport,
                          "evaluation": "llm", "kind": "attack", "passed": False,
                          "seed": model.seed,
-                         "error": f"{type(exc).__name__}: {exc}"})
+                         "error": exception_message(exc)})
     return rows
 
 
@@ -198,6 +208,8 @@ async def run(args):
     model = ModelConfig(args.backend, args.endpoint, args.model, args.seed, args.model_timeout)
     seeds = args.seeds if args.seeds is not None else [args.seed]
     cases = [case for case in ACTOR_CASES if args.suite == "all" or case.get("suite", "core") == args.suite]
+    replay = read_manifest(Path(args.replay_campaign)) if args.replay_campaign else None
+    campaign_graph = replay.get("graph", {}) if replay else {}
     if args.cases:
         cases = [case for case in cases if case["id"] in args.cases.split(",")]
     report = {"schema_version": 2, "model": vars(model), "experiment": {
@@ -205,6 +217,14 @@ async def run(args):
                   "cases": [case["id"] for case in cases], "suite": args.suite,
                   "distractors": args.distractors, "fault_profile": args.fault_profile,
                   "latency_ms": args.latency_ms, "parallel_calls": args.parallel_calls,
+                  "campaign_steps": len(replay["actions"]) if replay else args.campaign_steps,
+                  "campaign_seed": replay["seed"] if replay else args.campaign_seed,
+                  "campaign_graph_nodes": len(campaign_graph) if replay else args.campaign_graph_nodes,
+                  "campaign_graph_width": max(map(len, validate_graph(campaign_graph))) if campaign_graph else
+                      args.campaign_graph_width if args.campaign_graph_nodes and not replay else 0,
+                  "campaign_max_concurrency": max((len(action["requests"]) for action in replay["actions"] if action.get("kind") == "race"), default=1)
+                      if campaign_graph else args.parallel_calls if args.campaign_graph_nodes and not replay else 1,
+                  "replay_campaign": args.replay_campaign,
                   "protocol_only": args.protocol_only, "transport": args.transport},
               "status": "running", "started_at": datetime.now(timezone.utc).isoformat(),
               "methodology": [
@@ -240,10 +260,18 @@ async def run(args):
                                                distractors=args.distractors, latency_ms=args.latency_ms,
                                                parallel_calls=args.parallel_calls)
                     rows += await native_matrix(output / f"native-{transport}-{mode}", mode, transport)
+                    rows += await interactive_matrix(output / f"interactive-{transport}-{mode}", mode, transport,
+                                                     parallel_calls=args.parallel_calls)
+                    if args.campaign_steps or args.replay_campaign:
+                        rows += await campaign_matrix(output / f"campaign-{transport}-{mode}", mode, transport,
+                                                      seed=args.campaign_seed, steps=args.campaign_steps,
+                                                      manifest_path=Path(args.replay_campaign) if args.replay_campaign else None,
+                                                      graph_nodes=args.campaign_graph_nodes, graph_width=args.campaign_graph_width,
+                                                      parallel_calls=args.parallel_calls)
             except Exception as exc:
                 rows.append({"case": "protocol_infrastructure", "evaluation": "protocol", "mode": mode,
                              "transport": transport, "kind": "infrastructure", "passed": False,
-                             "error": f"{type(exc).__name__}: {exc}"})
+                             "error": exception_message(exc)})
             checkpoint()
         if not args.protocol_only:
             for seed in seeds:
@@ -259,7 +287,7 @@ async def run(args):
                         for mode in ("vulnerable", "hardened"):
                             rows.append({"case": case["id"], "evaluation": "llm", "kind": "infrastructure", "passed": False,
                                          "mode": mode, "seed": seed, "transport": transport,
-                                         "error": f"{type(exc).__name__}: {exc}"})
+                                         "error": exception_message(exc)})
                     checkpoint()
     checkpoint("completed")
     summary = report["summary"]
@@ -302,6 +330,13 @@ def main():
     parser.add_argument("--fault-profile", choices=["none", "transient"], default="none", help="Transient failures for actor workflows")
     parser.add_argument("--latency-ms", type=bounded_int(0, 2000), default=0, help="Server delay per forwarded tool operation")
     parser.add_argument("--parallel-calls", type=bounded_int(2, 32), default=8, help="Concurrent updates in dense protocol probes")
+    parser.add_argument("--campaign-steps", type=bounded_int(0, 200), default=0, help="Additional seeded guided-workflow steps per server arm")
+    parser.add_argument("--campaign-seed", type=int, default=7, help="Seed for reproducible guided-workflow campaigns")
+    parser.add_argument("--campaign-graph-nodes", type=bounded_int(0, 128), default=0,
+                        help="Use a generated dependency graph with 8 to 128 nodes instead of independent records")
+    parser.add_argument("--campaign-graph-width", type=bounded_int(2, 8), default=4,
+                        help="Maximum width of generated graph layers")
+    parser.add_argument("--replay-campaign", help="Replay an exported campaign.json instead of generating actions")
     parser.add_argument("--protocol-only", action="store_true", help="Only fixed real-transport probes; explicitly does not evaluate LLM behavior")
     parser.add_argument("--backend", choices=["ollama", "openai"], default="ollama")
     parser.add_argument("--endpoint", default="http://127.0.0.1:11434")
@@ -313,6 +348,22 @@ def main():
     parser.add_argument("--model-timeout", type=float, default=180)
     parser.add_argument("--cases", help="Comma-separated actor case IDs (protocol coverage is always complete)")
     args = parser.parse_args()
+    if (args.campaign_steps or args.replay_campaign or args.campaign_graph_nodes) and args.suite == "core":
+        parser.error("campaigns require --suite dense or --suite all")
+    if args.campaign_graph_nodes and not args.replay_campaign:
+        if not args.campaign_steps:
+            args.campaign_steps = max(60, args.campaign_graph_nodes)
+        try:
+            from .graph_campaign import generate_graph_manifest
+            generate_graph_manifest(args.campaign_seed, args.campaign_steps, nodes=args.campaign_graph_nodes,
+                                    width=args.campaign_graph_width, parallel_calls=args.parallel_calls)
+        except ValueError as exc:
+            parser.error(str(exc))
+    if args.replay_campaign:
+        try:
+            read_manifest(Path(args.replay_campaign))
+        except (OSError, ValueError) as exc:
+            parser.error(f"invalid replay campaign: {exc}")
     if args.cases and set(args.cases.split(",")) - {c["id"] for c in ACTOR_CASES}:
         parser.error("unknown actor case ID")
     if args.cases and args.suite != "all" and any(case["id"] in args.cases.split(",") and case.get("suite", "core") != args.suite for case in ACTOR_CASES):

@@ -121,6 +121,60 @@ The dense suite also exercises native MCP features: incident resource templates,
 
 See [native MCP features](docs/native-mcp.md) for supported protocol operations and a client example.
 
+### Bidirectional workflows and reproducible campaigns
+
+Four additional dense tools exercise server-to-client MCP requests:
+
+- `inspect_client_roots` requests the client's workspace declarations without granting filesystem access.
+- `sample_incident` requests a bounded client-generated summary of an authorized record.
+- `request_incident_input` requests a structured review form and handles acceptance, decline, and cancellation.
+- `guided_update_record` combines roots, sampling, confirmation bound to the exact update, version revalidation, and a durable retry receipt.
+
+The fixed protocol scenarios use controlled simulation clients. They test missing capabilities, poisoned summaries, malformed or refused approvals, callback failures and timeouts, lost acknowledgments, and concurrent guided writes. Client request/response traces are saved in `client.jsonl` and shown in the dashboard inspector. These callbacks are deterministic test behavior, not live language-model judgments.
+
+Add a seeded campaign to exercise many interacting failure and retry conditions:
+
+```powershell
+& .\.venv\Scripts\python.exe tests\eval_matrix.py --suite all --protocol-only --transport both --campaign-steps 60 --campaign-seed 11 --parallel-calls 16 --output runs\capability-campaign
+```
+
+Every campaign action checks the tool response, the full published incident state, and receipt counts against a reference state model. Each arm saves its exact action sequence as `campaign.json`. Replay it in fresh fixtures:
+
+```powershell
+& .\.venv\Scripts\python.exe tests\eval_matrix.py --suite dense --protocol-only --transport both --replay-campaign runs\capability-campaign\campaign-stdio-hardened\campaign.json --output runs\campaign-replay
+```
+
+The dashboard's **Capabilities exercised** table groups protocol assertions by feature and transport. The inspector shows the server-to-client request sequence, client responses, timings, and links to the saved campaign and state. See [bidirectional scenarios and campaign design](docs/bidirectional-campaigns.md) for boundaries and replay details.
+
+### Dependency-graph chaos and larger stress runs
+
+Generate a graph campaign with branching paths, shared prerequisites, cross-layer edges, atomic batches, and overlapping resolutions:
+
+```powershell
+& .\.venv\Scripts\python.exe tests\eval_matrix.py --suite all --protocol-only --transport both --campaign-graph-nodes 64 --campaign-graph-width 4 --campaign-steps 80 --campaign-seed 11 --parallel-calls 24 --output runs\graph-chaos
+```
+
+Graph campaigns support 8–128 generated nodes, widths of 2–8, and 2–32 concurrent requests. They verify complete state and receipt contents after each action, check concurrent results against a legal serialization, and count resource-update and catalog-change notifications. Manifests preserve the graph and race groups for replay; a different race winner is acceptable only if every outcome matches a legal execution.
+
+The dashboard includes the generated topology and per-check analysis. New dense tools include `analyze_dependencies` for layers and critical paths, `incident_bundle` for MCP resource-link results, and `set_catalog_profile` for dynamic catalog discovery. Switching profiles emits native tools/resources/prompts list-change notifications and disables compact-profile mutation tools until restoration.
+
+See [dependency graph campaigns](docs/dependency-graph-campaigns.md) for graph bounds, recovery waves, stress checks, and catalog control.
+
+### Resume campaigns and inspect protocol performance
+
+Graph campaigns now write an integrity-checked `checkpoint.json` after every verified action. Start a campaign with an explicit stopping boundary, then continue it in a fresh output folder:
+
+```powershell
+& .\.venv\Scripts\python.exe -m simlab.resume start --manifest runs\graph-chaos\campaign-stdio-hardened\campaign.json --mode hardened --transport sse --stop-after 6 --output runs\campaign-partial
+& .\.venv\Scripts\python.exe -m simlab.resume continue --checkpoint runs\campaign-partial\checkpoint.json --output runs\campaign-continued
+```
+
+Continuation restores verified state, receipts, remaining injected faults, catalog profile, and prior evidence. It preserves the original folder and recreates subscriptions in the new connection. Uncheckpointed fixture effects are discarded in the new run; this is recovery of a synthetic simulation at an action boundary.
+
+Reports also include **Request latency and message volume**, with median/P95 latency, completed/pending/cancelled counts, and logical JSON payload volume by capability. `performance.json` and `performance.csv` include a per-operation breakdown and separate client requests from server callbacks. Measurements come from captured wire logs and include intentional simulation delays.
+
+See [checkpoints and performance metrics](docs/checkpoints-performance.md) for validation, recovery boundaries, and timing definitions.
+
 See [dense simulation design and evidence](docs/dense-simulations.md) for tool arguments, fault behavior, and test coverage.
 
 ### OpenAI-compatible endpoints
@@ -153,6 +207,11 @@ Protocol checks run once for each server and transport combination. Every select
 | `--suite` | `core` | `core`, `dense`, or `all`; selects protocol and actor suites |
 | `--distractors` | `8` | Background documents in dense retrieval scenarios; 0–100 |
 | `--parallel-calls` | `8` | Concurrent single and batch writes in dense protocol checks; 2–32 |
+| `--campaign-steps` | `0` | Additional seeded guided-update actions per arm and transport; 0–200 |
+| `--campaign-seed` | `7` | Reproducible campaign generator seed |
+| `--campaign-graph-nodes` | `0` | Use a dependency-graph campaign with 8–128 nodes; 0 keeps independent-record campaigns |
+| `--campaign-graph-width` | `4` | Generated graph layer width, 2–8; must be smaller than node count |
+| `--replay-campaign` | Unset | Load a validated `campaign.json` instead of generating actions; requires `dense` or `all` |
 | `--latency-ms` | `0` | Delay for each forwarded tool call; 0–2000 ms |
 | `--fault-profile` | `none` | `transient` injects actor read and post-commit acknowledgment failures |
 | `--protocol-only` | Off | Run protocol probes without conversational actors |

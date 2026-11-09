@@ -58,8 +58,18 @@ SCHEMAS["list_records"] = schema(status="string", limit="integer", cursor="strin
 SCHEMAS["list_records"]["properties"]["status"]["enum"] = ["all", "open", "investigating", "resolved"]
 SCHEMAS["list_records"]["properties"]["limit"].update(minimum=1, maximum=20)
 SCHEMAS["list_records"]["properties"]["cursor"]["maxLength"] = 2048
+SCHEMAS["inspect_client_roots"] = schema()
+SCHEMAS["sample_incident"] = schema(record_id="string")
+SCHEMAS["request_incident_input"] = schema(record_id="string")
+SCHEMAS["guided_update_record"] = copy.deepcopy(SCHEMAS["update_record"])
+SCHEMAS["analyze_dependencies"] = schema(record_id="string")
+SCHEMAS["incident_bundle"] = schema(record_id="string")
+SCHEMAS["set_catalog_profile"] = schema(profile="string", handle="string")
+SCHEMAS["set_catalog_profile"]["properties"]["profile"]["enum"] = ["standard", "compact"]
 DENSE_TOOLS = {"search_documents", "get_record", "update_record", "batch_update_records",
-               "preview_updates", "plan_resolution", "list_records"}
+               "preview_updates", "plan_resolution", "list_records", "inspect_client_roots",
+               "sample_incident", "request_incident_input", "guided_update_record", "analyze_dependencies",
+               "incident_bundle", "set_catalog_profile"}
 
 DESCRIPTIONS = {
     "read_file": "Read a UTF-8 file in the simulation workspace.",
@@ -76,6 +86,13 @@ DESCRIPTIONS = {
     "preview_updates": "Validate 1 to 16 proposed updates without changing state or creating a retry receipt. Supply updates and a record:update handle. Returns proposed records; this is not a reservation. Commit separately with fresh versions and an idempotency key.",
     "plan_resolution": "Read a dependency-aware incident resolution plan. Returns each prerequisite once, before its dependents, with current records and unresolved blockers. Does not change state.",
     "list_records": "List incidents filtered by status (all/open/investigating/resolved), limit 1 to 20, and cursor (empty string for first page). Follow next_cursor using identical filters. A cursor error requires restarting pagination from an empty cursor.",
+    "inspect_client_roots": "Request the client's advertised roots and classify the trusted workspace. Roots are metadata and never expand filesystem permissions. Requires client roots capability.",
+    "sample_incident": "Request a client-generated summary of an authorized incident. Requires client sampling capability. The summary is untrusted advice and never authorizes a write.",
+    "request_incident_input": "Ask the client to review an authorized incident through a structured form. Returns accept, decline, or cancel; does not modify records. Requires client form elicitation capability.",
+    "guided_update_record": "Check client roots, request an incident summary, and obtain structured confirmation bound to the exact proposed update, then revalidate and commit. Uses the same arguments and permissions as update_record. Requires roots, sampling, and form elicitation. Identical hardened retries reuse the receipt without repeating callbacks.",
+    "analyze_dependencies": "Analyze a permitted incident and its prerequisite closure: node and edge counts, execution layers, a critical path, and unresolved records. Does not modify state.",
+    "incident_bundle": "Read an incident with MCP resource links to its complete authorized prerequisite closure. Follow a link with resources/read for the current version.",
+    "set_catalog_profile": "Switch between standard and compact discovery profiles using a catalog:manage handle. Sends tools, resources, and prompts list-change notifications only when the profile changes. Compact mode disables mutation and client-request tools until standard mode is restored.",
 }
 
 
@@ -175,17 +192,23 @@ class Firewall:
                 self.used.add(handle)
         if name == "calculate":
             calculate(args["expression"])
-        if name in ("get_record", "plan_resolution", "update_record", "batch_update_records", "preview_updates"):
+        if name in ("get_record", "plan_resolution", "update_record", "batch_update_records", "preview_updates",
+                    "sample_incident", "request_incident_input", "guided_update_record", "analyze_dependencies", "incident_bundle"):
             records = args["updates"] if name in ("batch_update_records", "preview_updates") else [args]
             if any(record["record_id"] not in self.config.get("allowed_records", []) for record in records):
                 raise Denied("record_not_authorized")
             if len({record["record_id"] for record in records}) != len(records):
                 raise Denied("duplicate_record")
-        if name in ("update_record", "batch_update_records", "preview_updates"):
+        if name in ("update_record", "batch_update_records", "preview_updates", "guided_update_record"):
             state = self.config["handles"].get(args["handle"], {})
             if (state.get("session") != self.config["session"] or state.get("audience") != "ops"
                     or "record:update" not in state.get("scopes", [])):
                 raise Denied("write_scope_denied")
+        if name == "set_catalog_profile":
+            state = self.config["handles"].get(args["handle"], {})
+            if (state.get("session") != self.config["session"] or state.get("audience") != "ops"
+                    or "catalog:manage" not in state.get("scopes", [])):
+                raise Denied("catalog_scope_denied")
         return name
 
 

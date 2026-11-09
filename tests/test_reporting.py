@@ -143,3 +143,48 @@ def test_review_identity_uses_evidence_content_and_survives_relocation(tmp_path)
     assert identity()==original
     rows[0]['deputy']['answer']='The task was not completed'
     assert identity()!=original
+
+
+def test_capability_overview_and_client_trace_escape_payloads_and_link_local_evidence(tmp_path):
+    marker = '<img src=x onerror="alert(1)">'
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    for name in ("client.jsonl", "campaign.json", "state.json"):
+        (case_dir / name).write_text('{}', encoding="utf-8")
+    rows = [
+        {"case": "client_sampling_roundtrip", "evaluation": "protocol", "feature": "Sampling", "mode": "vulnerable", "transport": "stdio", "passed": True},
+        {"case": "client_sampling_roundtrip", "evaluation": "protocol", "feature": "Sampling", "mode": "hardened", "transport": "sse", "passed": False,
+         "client": str(case_dir / "client.jsonl"), "manifest": str(case_dir / "campaign.json"), "state_file": str(case_dir / "state.json"),
+         "client_requests": [{"operation": marker, "duration_seconds": 0.1, "request": {"text": marker}, "response": {"text": marker}}]},
+        {"case": "mcp_logging_threshold", "evaluation": "protocol", "mode": "hardened", "transport": "stdio", "passed": True},
+    ]
+    report = {"summary": summarize(rows), "model": {"model": "local"}, "rows": rows, "methodology": []}
+    write_html_report(report, tmp_path / "report.html")
+    html = (tmp_path / "report.html").read_text(encoding="utf-8")
+    assert 'id="capabilities"' in html and 'Capabilities exercised' in html
+    assert '<th scope="row">Sampling</th><td>sse, stdio</td><td>1/1</td><td>0/1</td><td>1</td>' in html
+    assert 'Server logging' in html and 'Server-to-client request trace' in html
+    assert marker not in html and '&lt;img' in html
+    assert 'href="case/client.jsonl"' in html and 'href="case/campaign.json"' in html and 'href="case/state.json"' in html
+
+
+def test_client_and_manifest_evidence_cannot_link_outside_report_folder(tmp_path):
+    from simlab.dashboard import evidence_links
+    assert evidence_links({"client": "../client.jsonl", "manifest": "../campaign.json", "state_file": "../state.json"}, tmp_path) == ""
+
+
+def test_graph_topology_is_bounded_and_invalid_graphs_cannot_inject_markup(tmp_path):
+    from simlab.dependency_graph import generate_graph
+    rows = [{"case": "graph_campaign_7", "mode": "hardened", "transport": "stdio", "evaluation": "protocol", "passed": True,
+             "campaign_seed": 7, "graph_definition": generate_graph(7, 16, 4)}]
+    report = {"summary": summarize(rows), "model": {"model": "local"}, "rows": rows, "methodology": []}
+    write_html_report(report, tmp_path / "report.html")
+    html = (tmp_path / "report.html").read_text(encoding="utf-8")
+    assert 'id="dependency-topology"' in html and '16 nodes' in html and '4 layers' in html
+    assert html.count('text-anchor="middle"') == 16
+    payload = '<script>alert(1)</script>'
+    rows[0]["graph_definition"][payload] = []
+    write_html_report(report, tmp_path / "report.html")
+    html = (tmp_path / "report.html").read_text(encoding="utf-8")
+    assert 'invalid recorded graph' in html and 'id="dependency-topology"' not in html
+    assert payload not in html

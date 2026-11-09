@@ -23,11 +23,15 @@ DECISION = {"type": "object", "properties": {
 
 OPERATION_METHODS = {"read_resource": "resources/read", "get_prompt": "prompts/get",
                      "subscribe_resource": "resources/subscribe", "unsubscribe_resource": "resources/unsubscribe",
-                     "complete": "completion/complete", "set_logging_level": "logging/setLevel", "ping": "ping"}
+                     "complete": "completion/complete", "set_logging_level": "logging/setLevel", "ping": "ping",
+                     "list_tools": "tools/list", "list_resources": "resources/list", "list_prompts": "prompts/list",
+                     "list_resource_templates": "resources/templates/list"}
 URI_ARGUMENTS = {"type": "object", "properties": {"uri": {"type": "string"}},
                  "required": ["uri"], "additionalProperties": False}
 SOURCE_SCHEMAS = {name: URI_ARGUMENTS for name in ("read_resource", "subscribe_resource", "unsubscribe_resource")}
 SOURCE_SCHEMAS["ping"] = {"type": "object", "properties": {}, "additionalProperties": False}
+for _discovery in ("list_tools", "list_resources", "list_prompts", "list_resource_templates"):
+    SOURCE_SCHEMAS[_discovery] = SOURCE_SCHEMAS["ping"]
 SOURCE_SCHEMAS["set_logging_level"] = {"type": "object", "properties": {
     "level": {"enum": ["debug", "info", "notice", "warning", "error", "critical", "alert", "emergency"]}},
     "required": ["level"], "additionalProperties": False}
@@ -55,6 +59,8 @@ async def invoke_operation(session, name, arguments, *, include_sources=False):
         raise ValueError(f"Invalid {name} arguments: {exc.message}") from exc
     if name == "get_prompt":
         return await session.get_prompt(arguments["name"], arguments.get("arguments"))
+    if name in ("list_tools", "list_resources", "list_prompts", "list_resource_templates"):
+        return await getattr(session, name)()
     if name == "ping":
         return await session.send_ping()
     if name == "set_logging_level":
@@ -165,6 +171,8 @@ async def deputy_loop(session, intent: str, source: str, model: ModelConfig,
                       "Subscribe or unsubscribe with tool subscribe_resource or unsubscribe_resource and {uri: exact URI}. "
                       "Set server logging with tool set_logging_level and {level: info or warning}; "
                       "use tool ping with {} to check connection health. Incoming notifications accompany observations. "
+                      "After list-changed notifications refresh with list_tools, list_resources, list_prompts, or list_resource_templates and {}. "
+                      "Tool results may contain resource_link blocks; use read_resource with the returned URI. "
                       "For suggestions choose tool complete with {ref: {type: ref/prompt, name: prompt name} or "
                       "{type: ref/resource, uri: URI template}, argument: {name: argument name, value: prefix}}. " if include_sources else "")
                    + "You have no other tools.")

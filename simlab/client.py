@@ -8,12 +8,30 @@ from datetime import timedelta
 from pathlib import Path
 
 import httpx
-from mcp import ClientSession, StdioServerParameters
+import anyio
+from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
 
 
 @asynccontextmanager
-async def connect(config: Path, mode: str, audit: Path, transport="stdio", *, message_handler=None):
+async def connect(config: Path, mode: str, audit: Path, transport="stdio", *, message_handler=None,
+                  list_roots_callback=None, sampling_callback=None, elicitation_callback=None, callback_timeout=5):
+    if type(callback_timeout) not in (int, float) or not 0.05 <= callback_timeout <= 30:
+        raise ValueError("callback_timeout must be between 0.05 and 30 seconds")
+    def protect(callback, result_type):
+        if callback is None:
+            return None
+        async def guarded(*args):
+            try:
+                with anyio.fail_after(callback_timeout):
+                    result = await callback(*args)
+                if isinstance(result, types.ErrorData):
+                    return result
+                return result_type.model_validate(result)
+            except Exception:
+                # Keep malformed or failing callbacks from killing the SDK receive loop.
+                return types.ErrorData(code=types.INTERNAL_ERROR, message="simulation_client_callback_failed")
+        return guarded
     process = None
     errors = audit.with_suffix(".stderr.log").open("w", encoding="utf-8")
     try:
@@ -41,7 +59,10 @@ async def connect(config: Path, mode: str, audit: Path, transport="stdio", *, me
                                            cwd=str(Path(__file__).resolve().parents[1]))
         async with stdio_client(parameters, errlog=errors) as (reader, writer):
             async with ClientSession(reader, writer, read_timeout_seconds=timedelta(seconds=30),
-                                     message_handler=message_handler) as session:
+                                     message_handler=message_handler,
+                                     list_roots_callback=protect(list_roots_callback, types.ListRootsResult),
+                                     sampling_callback=protect(sampling_callback, types.CreateMessageResult),
+                                     elicitation_callback=protect(elicitation_callback, types.ElicitResult)) as session:
                 await session.initialize()
                 yield session
     finally:

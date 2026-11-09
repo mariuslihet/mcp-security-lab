@@ -9,8 +9,8 @@ from mcp import types
 from mcp.shared.exceptions import McpError
 
 from .client import connect
-from .fixtures import WRITE_HANDLE, create_fixture, read_jsonl
-from .mcp_features import INCIDENT_TEMPLATE
+from .fixtures import CATALOG_HANDLE, WRITE_HANDLE, create_fixture, read_jsonl
+from .mcp_features import CATALOG_URI, INCIDENT_TEMPLATE
 
 
 async def native_matrix(directory: Path, mode: str, transport: str):
@@ -144,6 +144,40 @@ async def native_matrix(directory: Path, mode: str, transport: str):
             if not request.done():
                 request.cancel()
                 await asyncio.gather(request, return_exceptions=True)
+
+        analyzed = await session.call_tool(prefix + "analyze_dependencies", {"record_id": "WF-006"})
+        bundle = await session.call_tool(prefix + "incident_bundle", {"record_id": "WF-006"})
+        links = [str(block.uri) for block in bundle.content if isinstance(block, types.ResourceLink)]
+        record("mcp_dependency_analysis", not analyzed.isError and analyzed.structuredContent["node_count"] == 6
+               and len(analyzed.structuredContent["critical_path"]) == 4)
+        record("mcp_resource_link_results", not bundle.isError and len(links) == 6 and set(links) == set(bundle.structuredContent["resources"]))
+        catalog = json.loads((await session.read_resource(CATALOG_URI)).contents[0].text)["incidents"]
+        record("mcp_resource_catalog_scope", ("lab://incidents/PAY-001" not in catalog) if hardened else
+               ("lab://incidents/PAY-001" in catalog), kind="attack")
+        unauthorized = await session.call_tool(prefix + "set_catalog_profile", {"profile": "compact", "handle": WRITE_HANDLE})
+        record("mcp_catalog_admin_scope", unauthorized.isError if hardened else
+               not unauthorized.isError and unauthorized.structuredContent["changed"], kind="attack", blocked=unauthorized.isError)
+        await session.call_tool(prefix + "set_catalog_profile", {"profile": "standard", "handle": CATALOG_HANDLE})
+        start = len(notifications)
+        switched = await session.call_tool(prefix + "set_catalog_profile", {"profile": "compact", "handle": CATALOG_HANDLE})
+        methods = [item["method"] for item in notifications[start:]]
+        changes = ("notifications/tools/list_changed", "notifications/resources/list_changed", "notifications/prompts/list_changed")
+        record("mcp_catalog_list_change_notifications", not switched.isError and all(methods.count(method) == 1 for method in changes))
+        start = len(notifications)
+        repeated = await session.call_tool(prefix + "set_catalog_profile", {"profile": "compact", "handle": CATALOG_HANDLE})
+        tools = {tool.name for tool in (await session.list_tools()).tools}
+        resources = {str(item.uri) for item in (await session.list_resources()).resources}
+        prompts = {item.name for item in (await session.list_prompts()).prompts}
+        record("mcp_compact_catalog_discovery", not repeated.structuredContent["changed"] and not notifications[start:]
+               and prefix + "guided_update_record" not in tools and CATALOG_URI not in resources and "incident_triage" not in prompts)
+        before = Path(config["state_path"]).read_bytes()
+        disabled = await session.call_tool(prefix + "update_record", {"record_id": "INC-003", "expected_version": 1,
+            "status": "investigating", "handle": WRITE_HANDLE, "idempotency_key": "compact-write"})
+        record("mcp_compact_catalog_execution_boundary", disabled.isError and Path(config["state_path"]).read_bytes() == before)
+        restored = await session.call_tool(prefix + "set_catalog_profile", {"profile": "standard", "handle": CATALOG_HANDLE})
+        tools = {tool.name for tool in (await session.list_tools()).tools}
+        record("mcp_catalog_restoration", not restored.isError and prefix + "guided_update_record" in tools
+               and not (await session.call_tool(prefix + "calculate", {"expression": "2+2"})).isError)
 
     for row in rows:
         row.update(mode=mode, transport=transport, evaluation="protocol", suite="dense",

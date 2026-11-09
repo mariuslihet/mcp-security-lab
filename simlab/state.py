@@ -59,6 +59,22 @@ class IncidentStore:
         visit(record_id)
         return steps
 
+    def analyze_dependencies(self, record_id: str, hardened: bool) -> dict:
+        if hardened:
+            Firewall(self.config).check("sim_analyze_dependencies", {"record_id": record_id})
+        records = json.loads(self.path.read_text(encoding="utf-8"))["records"]
+        steps = self._resolution_steps(record_id, records, hardened)
+        paths, levels = {}, {}
+        for step in steps:
+            key, parents = step["record"]["id"], step["depends_on"]
+            parent = max(parents, key=lambda item: (len(paths[item]), item)) if parents else None
+            paths[key] = (paths[parent] if parent else []) + [key]
+            levels[key] = len(paths[key]) - 1
+        layers = [[key for key in sorted(levels) if levels[key] == level] for level in range(max(levels.values()) + 1)]
+        return {"record_id": record_id, "node_count": len(steps), "edge_count": sum(len(step["depends_on"]) for step in steps),
+                "layers": layers, "critical_path": paths[record_id],
+                "unresolved": sorted(step["record"]["id"] for step in steps if step["record"]["status"] != "resolved")}
+
     def list_records(self, arguments: dict, hardened: bool) -> dict:
         # Bound pagination in both arms; the vulnerable arm intentionally exposes protected records.
         if hardened:
@@ -109,8 +125,28 @@ class IncidentStore:
     async def preview_updates(self, arguments: dict, hardened: bool) -> dict:
         return await self._mutate(arguments, hardened, batch=True, dry_run=True)
 
-    async def _mutate(self, arguments: dict, hardened: bool, *, batch: bool, dry_run: bool = False) -> dict:
-        operation = "preview_updates" if dry_run else "batch_update_records" if batch else "update_record"
+    def replay_guided(self, arguments: dict) -> dict | None:
+        Firewall(self.config).check("sim_guided_update_record", arguments)
+        data = json.loads(self.path.read_text(encoding="utf-8"))
+        return self._replay(data, arguments, "guided_update_record")
+
+    def _replay(self, data, arguments, operation):
+        key = self.config["session"] + ":" + arguments["idempotency_key"]
+        receipt = data["receipts"].get(key)
+        if receipt is None:
+            return None
+        fingerprint = json.dumps({"operation": operation, "arguments": arguments}, sort_keys=True)
+        if receipt["fingerprint"] != fingerprint:
+            raise Denied("idempotency_conflict")
+        self.journal("idempotent_replay", operation=operation, key=arguments["idempotency_key"])
+        return {**copy.deepcopy(receipt["result"]), "deduplicated": True}
+
+    async def guided_update(self, arguments: dict, hardened: bool):
+        return await self._mutate(arguments, hardened, batch=False, operation_name="guided_update_record")
+
+    async def _mutate(self, arguments: dict, hardened: bool, *, batch: bool, dry_run: bool = False,
+                      operation_name: str | None = None) -> dict:
+        operation = operation_name or ("preview_updates" if dry_run else "batch_update_records" if batch else "update_record")
         if hardened:
             # Enforce authority even when called without the transport firewall.
             Firewall(self.config).check("sim_" + operation, arguments)
@@ -120,10 +156,7 @@ class IncidentStore:
             fingerprint = json.dumps({"operation": operation, "arguments": arguments}, sort_keys=True)
             receipt = data["receipts"].get(key) if not dry_run else None
             if hardened and receipt:
-                if receipt["fingerprint"] != fingerprint:
-                    raise Denied("idempotency_conflict")
-                self.journal("idempotent_replay", operation=operation, key=arguments["idempotency_key"])
-                return {**copy.deepcopy(receipt["result"]), "deduplicated": True}
+                return self._replay(data, arguments, operation)
             handle = self.config["handles"].get(arguments["handle"], {})
             updates = arguments["updates"] if batch else [arguments]
             changed, results = [], []

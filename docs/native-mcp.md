@@ -24,8 +24,11 @@ Use `--suite all` to include the core suite too. Native probes run in separate f
 | `notifications/cancelled` | Interrupts an in-flight planning request by its JSON-RPC request ID |
 | `ping` | Checks connection health, including after cancellation |
 | `tools/list`, `tools/call` | Advertises output schemas and annotations; returns structured results alongside JSON text |
+| `notifications/tools/list_changed`, `notifications/resources/list_changed`, `notifications/prompts/list_changed` | Announces a catalog profile change so clients can refresh discovery |
 
 The existing operations-status resource and `incident_review` prompt remain available. The core suite does not advertise subscriptions or completions. The dense server advertises these capabilities during initialization.
+
+`incident_bundle` adds native resource-link tool results. Dynamic profile control, graph analysis, and their stress scenarios are described in [dependency graph campaigns](dependency-graph-campaigns.md).
 
 ## Resources and notifications
 
@@ -57,7 +60,9 @@ The argument is `{"name":"record_id","value":"WF-"}`. Matching is a case-sensiti
 
 `plan_resolution` emits progress only when the request contains a progress token. For the six-incident fixture, progress values are 0 through 6 with total 6. Messages describe the inspected incidents. Progress notifications describe planning; they do not indicate that any incident was modified. The proxy filters message text while preserving the exact opaque progress token, including zero and text that resembles an injection pattern.
 
-Successful tools return matching `structuredContent` and JSON text. Their `outputSchema` describes required fields and types, including incident records, plan steps, pagination, and mutation receipts. Error results may contain text only. Catalog annotations identify tools that read or preview state and indicate hardened write idempotency. `openWorldHint` is false because these tools operate locally. Annotations describe behavior for clients; permission checks run independently of them.
+Successful tools return matching `structuredContent` and JSON text. Their `outputSchema` describes required fields and types, including incident records, plan steps, pagination, and mutation receipts. Error results may contain text only. Catalog annotations identify tools that read or preview state and indicate hardened write idempotency. Local tools have `openWorldHint: false`; bidirectional tools that request client roots, sampling, or elicitation have `openWorldHint: true`. Annotations describe behavior for clients; permission checks run independently of them.
+
+The lab also supports server-initiated roots, sampling, and form elicitation through [bidirectional workflows and seeded campaigns](bidirectional-campaigns.md).
 
 ## Logging and cancellation
 
