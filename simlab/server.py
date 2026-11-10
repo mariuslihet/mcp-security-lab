@@ -169,6 +169,10 @@ def create_server(config: dict, hardened: bool) -> Server:
                 value = graph_operations.failure_cascade(arguments)
             elif name == "plan_recovery":
                 value = graph_operations.plan_recovery(arguments)
+            elif name == "simulate_recovery_timeline":
+                value = graph_operations.recovery_timeline(arguments)
+            elif name == "rank_dependency_bottlenecks":
+                value = graph_operations.rank_bottlenecks(arguments)
             elif name == "incident_bundle":
                 plan = store.plan_resolution(arguments["record_id"], hardened)
                 value = {"record": store.read(arguments["record_id"]),

@@ -16,6 +16,11 @@ from pathlib import Path
 from .controls import Denied, Firewall, load_config, sanitize
 
 
+# Structured output is also serialized as text, so a 128-node timeline can
+# legitimately exceed asyncio's default 64 KiB line buffer. Keep a finite cap.
+MAX_WIRE_LINE_BYTES = 1024 * 1024
+
+
 class Audit:
     def __init__(self, path: Path):
         self.path = path
@@ -66,7 +71,7 @@ async def downstream(config_path: str, mode: str, url: str | None, http_url: str
         proc = await asyncio.create_subprocess_exec(
             sys.executable, "-m", mode + "_mcp", "--config", config_path,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-            stderr=sys.stderr,
+            stderr=sys.stderr, limit=MAX_WIRE_LINE_BYTES,
         )
         async def send(payload):
             proc.stdin.write((json.dumps(payload) + "\n").encode())

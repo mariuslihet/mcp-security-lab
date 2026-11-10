@@ -19,7 +19,8 @@ from .fixtures import CATALOG_HANDLE, WRITE_HANDLE, create_fixture
 
 
 GRAPH_TOOLS = ("batch_update_records", "update_record", "guided_update_record", "preview_updates", "get_record",
-               "analyze_dependencies", "incident_bundle", "set_catalog_profile", "simulate_dependency_outage", "plan_recovery")
+               "analyze_dependencies", "incident_bundle", "set_catalog_profile", "simulate_dependency_outage", "plan_recovery",
+               "simulate_recovery_timeline", "rank_dependency_bottlenecks")
 APPROVALS = ("accept", "decline", "cancel", "false", "wrong_digest")
 CALL_SCHEMA = {"oneOf": [{"type": "object", "additionalProperties": False,
     "required": ["kind", "tool", "arguments", "approval", "label"], "properties": {
@@ -50,6 +51,8 @@ def validate_graph_manifest(manifest):
             continue
         requests = action["requests"] if action["kind"] == "race" else [action["arguments"]]
         for arguments in requests:
+            if any(row["record_id"] not in allowed for row in arguments.get("durations", [])):
+                raise ValueError("dependency campaign references an unsupported duration record")
             if any(key not in allowed for key in arguments.get("failed_records", [])):
                 raise ValueError("dependency campaign references an unsupported outage record")
             updates = arguments.get("updates", [arguments])
@@ -63,10 +66,10 @@ def validate_graph_manifest(manifest):
     return manifest
 
 
-def generate_graph_manifest(seed, steps=60, *, nodes=32, width=4, parallel_calls=8, race_topology="shared", root_churn=False, outage_stress=False):
+def generate_graph_manifest(seed, steps=60, *, nodes=32, width=4, parallel_calls=8, race_topology="shared", root_churn=False, outage_stress=False, timeline_stress=False):
     if type(steps) is not int or not 1 <= steps <= 200 or type(parallel_calls) is not int or not 2 <= parallel_calls <= 32:
         raise ValueError("graph campaigns require 1 to 200 actions and 2 to 32 parallel requests")
-    if race_topology not in ("shared", "mixed") or type(root_churn) is not bool or type(outage_stress) is not bool:
+    if race_topology not in ("shared", "mixed") or any(type(flag) is not bool for flag in (root_churn, outage_stress, timeline_stress)):
         raise ValueError("invalid graph campaign stress profile")
     graph = generate_graph(seed, nodes, width)
     layers, rng, actions = validate_graph(graph), random.Random(seed), []
@@ -83,6 +86,14 @@ def generate_graph_manifest(seed, steps=60, *, nodes=32, width=4, parallel_calls
 
     call("analyze_dependencies", {"record_id": tip}, "initial_analysis")
     call("incident_bundle", {"record_id": tip}, "linked_resources")
+    def timed_preview(budget, label):
+        call("simulate_recovery_timeline", {"record_id": tip, "max_parallel": budget, "durations": [
+            {"record_id": key, "investigate_ms": rng.randint(1, 50), "resolve_ms": rng.randint(1, 100)}
+            for key in (layers[0][0], layers[0][1], tip)]}, label)
+    if timeline_stress:
+        call("rank_dependency_bottlenecks", {"record_id": tip, "limit": 20}, "initial_bottleneck_ranking")
+        for budget in (1, 16):
+            timed_preview(budget, "weighted_recovery_timeline")
     if outage_stress:
         call("simulate_dependency_outage", {"failed_records": layers[0][:2]}, "root_outage")
         call("plan_recovery", {"record_id": tip, "max_parallel": 3}, "initial_recovery_plan")
@@ -136,6 +147,9 @@ def generate_graph_manifest(seed, steps=60, *, nodes=32, width=4, parallel_calls
     call("batch_update_records", conflict, "receipt_payload_conflict")
     guided(guided_target, "approved_root")
     guided(guided_target, "approved_root")
+    if timeline_stress:
+        timed_preview(3, "contended_recovery_timeline")
+        call("rank_dependency_bottlenecks", {"record_id": tip, "limit": 5}, "mid_campaign_bottlenecks")
     if outage_stress:
         call("simulate_dependency_outage", {"failed_records": layers[len(layers) // 2][:2]}, "mid_graph_outage")
         for budget in (1, 16):
@@ -147,6 +161,9 @@ def generate_graph_manifest(seed, steps=60, *, nodes=32, width=4, parallel_calls
             call("batch_update_records", batch([update(key) for key in selected], f"resolve-{len(actions)}"), "dependency_wave")
     call("analyze_dependencies", {"record_id": tip}, "completed_analysis")
     call("incident_bundle", {"record_id": tip}, "completed_resources")
+    if timeline_stress:
+        timed_preview(16, "completed_recovery_timeline")
+        call("rank_dependency_bottlenecks", {"record_id": "PAY-001", "limit": 1}, "protected_bottleneck_probe")
     if outage_stress:
         call("plan_recovery", {"record_id": tip, "max_parallel": 16}, "completed_recovery_plan")
         call("simulate_dependency_outage", {"failed_records": ["PAY-001"]}, "protected_outage_probe")
@@ -155,7 +172,11 @@ def generate_graph_manifest(seed, steps=60, *, nodes=32, width=4, parallel_calls
         raise ValueError(f"this graph needs at least {minimum} campaign actions")
     while len(actions) < steps:
         index, key = len(actions), rng.choice(ordered)
-        if outage_stress and index % 7 == 0:
+        if timeline_stress and index % 9 == 0:
+            call("simulate_recovery_timeline", {"record_id": key, "max_parallel": rng.randint(1, 16), "durations": []}, "post_stress_timeline")
+        elif timeline_stress and index % 9 == 1:
+            call("rank_dependency_bottlenecks", {"record_id": key, "limit": rng.randint(1, 20)}, "post_stress_bottlenecks")
+        elif outage_stress and index % 7 == 0:
             call("simulate_dependency_outage", {"failed_records": rng.sample(ordered, rng.randint(1, min(16, nodes)))}, "multi_fault_outage")
         elif outage_stress and index % 7 == 1:
             call("plan_recovery", {"record_id": key, "max_parallel": rng.randint(1, 16)}, "post_stress_recovery")
@@ -248,6 +269,13 @@ class GraphOracle:
 
     def call(self, tool, args, approval="accept", *, roots_drift=False):
         unchanged = {"error": True, "changed": []}
+        if tool in ("simulate_recovery_timeline", "rank_dependency_bottlenecks"):
+            selected = self.closure(args["record_id"])
+            if self.hardened and not selected <= self.allowed:
+                return unchanged
+            from .timeline_oracle import preview
+            value = preview(tool, args, self.graph, self.records, selected)
+            return unchanged if value is None else {"error": False, "changed": [], "value": value}
         if tool in ("simulate_dependency_outage", "plan_recovery"):
             return self.graph_preview(tool, args)
         if self.profile == "compact" and tool in {"update_record", "batch_update_records", "guided_update_record", "preview_updates"}:

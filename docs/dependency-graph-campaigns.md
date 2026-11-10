@@ -11,6 +11,8 @@ Graph campaigns extend the independent-record campaign format with bounded depen
 | `set_catalog_profile` | `profile`, `handle` | Selects `standard` or `compact`, requiring a `catalog:manage` handle in the hardened arm |
 | `simulate_dependency_outage` | `failed_records` | Simulates downstream impact from 1–16 failed incidents, including shortest causal paths and versioned snapshots |
 | `plan_recovery` | `record_id`, `max_parallel` | Schedules prerequisite-aware versioned recovery waves with 1–16 concurrent updates |
+| `simulate_recovery_timeline` | `record_id`, `max_parallel`, `durations` | Simulates worker-assigned recovery events with uneven durations and timing bounds |
+| `rank_dependency_bottlenecks` | `record_id`, `limit` | Ranks deduplicated downstream impact and unresolved work within the target closure |
 
 Hardened names use the usual `sim_` prefix. Analysis and bundles are read-only. Their prerequisite traversals enforce the same missing-record, permission, and cycle checks as resolution plans. Resource links identify JSON resources; clients follow them through `resources/read` for the current record rather than treating the link itself as a snapshot.
 
@@ -70,6 +72,8 @@ The race checker derives precedence from returned per-record versions and prereq
 `--campaign-root-churn` adds native root-change notifications, workspace withdrawal/restoration, and notified or silent changes during guided approval. The client declaration mode is modeled independently and checked after every action. These profiles are preserved in version-2 manifests and replayed without needing the original CLI flags.
 
 `--campaign-outage-stress` composes multi-node failure cascades with recovery scheduling before and after mutations. It varies concurrency budgets, probes protected records, and samples additional failure sets after resolution. See [outage and recovery semantics](outage-recovery.md) for scheduling and authority boundaries. These read-only previews also remain available in compact catalog mode.
+
+`--campaign-timeline-stress` adds weighted timelines, worker contention, simultaneous completion handling, and bottleneck rankings at initial, partial, and completed states. See [timed scheduling semantics](timed-recovery.md). All profiles can be enabled together and reconstructed from saved manifests.
 
 Campaigns subscribe to the first and terminal graph resources. Each mutation must produce exactly the expected subscribed URI notifications, including post-commit error responses. Hardened receipt replays and failed transactions must produce none. Catalog transitions are checked separately for exactly one notification per changed list. All notification evidence is retained in result rows and the wire journal.
 

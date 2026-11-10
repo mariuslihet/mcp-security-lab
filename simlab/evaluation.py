@@ -225,6 +225,8 @@ async def run(args):
                       if replay else args.campaign_root_churn,
                   "campaign_outage_stress": any(action.get("tool") in ("simulate_dependency_outage", "plan_recovery") for action in replay["actions"])
                       if replay else args.campaign_outage_stress,
+                  "campaign_timeline_stress": any(action.get("tool") in ("simulate_recovery_timeline", "rank_dependency_bottlenecks") for action in replay["actions"])
+                      if replay else args.campaign_timeline_stress,
                   "campaign_graph_width": max(map(len, validate_graph(campaign_graph))) if campaign_graph else
                       args.campaign_graph_width if args.campaign_graph_nodes and not replay else 0,
                   "campaign_max_concurrency": max((len(action["requests"]) for action in replay["actions"] if action.get("kind") == "race"), default=1)
@@ -273,7 +275,8 @@ async def run(args):
                                                       manifest_path=Path(args.replay_campaign) if args.replay_campaign else None,
                                                       graph_nodes=args.campaign_graph_nodes, graph_width=args.campaign_graph_width,
                                                       parallel_calls=args.parallel_calls, race_topology=args.campaign_race_topology,
-                                                      root_churn=args.campaign_root_churn, outage_stress=args.campaign_outage_stress)
+                                                      root_churn=args.campaign_root_churn, outage_stress=args.campaign_outage_stress,
+                                                      timeline_stress=args.campaign_timeline_stress)
             except Exception as exc:
                 rows.append({"case": "protocol_infrastructure", "evaluation": "protocol", "mode": mode,
                              "transport": transport, "kind": "infrastructure", "passed": False,
@@ -346,6 +349,7 @@ def main():
                         help="Use shared-write or mixed partial/disjoint/overlapping graph race groups")
     parser.add_argument("--campaign-root-churn", action="store_true", help="Change client roots before and during guided approvals")
     parser.add_argument("--campaign-outage-stress", action="store_true", help="Simulate multi-node outages and bounded recovery plans during graph campaigns")
+    parser.add_argument("--campaign-timeline-stress", action="store_true", help="Simulate weighted recovery timelines and rank graph bottlenecks during campaigns")
     parser.add_argument("--replay-campaign", help="Replay an exported campaign.json instead of generating actions")
     parser.add_argument("--protocol-only", action="store_true", help="Only fixed real-transport probes; explicitly does not evaluate LLM behavior")
     parser.add_argument("--backend", choices=["ollama", "openai"], default="ollama")
@@ -367,10 +371,11 @@ def main():
             from .graph_campaign import generate_graph_manifest
             generate_graph_manifest(args.campaign_seed, args.campaign_steps, nodes=args.campaign_graph_nodes,
                                     width=args.campaign_graph_width, parallel_calls=args.parallel_calls,
-                                    race_topology=args.campaign_race_topology, root_churn=args.campaign_root_churn, outage_stress=args.campaign_outage_stress)
+                                    race_topology=args.campaign_race_topology, root_churn=args.campaign_root_churn, outage_stress=args.campaign_outage_stress,
+                                    timeline_stress=args.campaign_timeline_stress)
         except ValueError as exc:
             parser.error(str(exc))
-    if (args.campaign_race_topology != "shared" or args.campaign_root_churn or args.campaign_outage_stress) and not (args.campaign_graph_nodes or args.replay_campaign):
+    if (args.campaign_race_topology != "shared" or args.campaign_root_churn or args.campaign_outage_stress or args.campaign_timeline_stress) and not (args.campaign_graph_nodes or args.replay_campaign):
         parser.error("advanced race/root profiles require a graph campaign")
     if args.replay_campaign:
         try:

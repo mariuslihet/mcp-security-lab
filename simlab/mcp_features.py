@@ -26,6 +26,7 @@ READ_ONLY_TOOLS = {"read_file", "list_directory", "fetch_logs", "calculate", "se
                    "sample_incident", "request_incident_input"}
 READ_ONLY_TOOLS |= {"analyze_dependencies", "incident_bundle", "get_client_root_status"}
 READ_ONLY_TOOLS |= {"simulate_dependency_outage", "plan_recovery"}
+READ_ONLY_TOOLS |= {"simulate_recovery_timeline", "rank_dependency_bottlenecks"}
 RECORD_SCHEMA = {"type": "object", "required": ["id", "status", "version"], "properties": {
     "id": {"type": "string"}, "status": {"enum": ["open", "investigating", "resolved"]},
     "version": {"type": "integer", "minimum": 1}}}
@@ -41,6 +42,17 @@ def output_schema(name):
         },
     }}
     fields = {
+        "simulate_recovery_timeline": {"record_id": {"type": "string"}, "max_parallel": {"type": "integer"},
+            "events": {"type": "array", "items": {"type": "object", "required": ["record_id", "status", "expected_version", "worker", "start_ms", "end_ms"],
+                "properties": {"record_id": {"type": "string"}, "status": {"enum": ["investigating", "resolved"]},
+                    **{key: {"type": "integer", "minimum": 0} for key in ("expected_version", "worker", "start_ms", "end_ms")}}}},
+            **{key: {"type": "integer", "minimum": 0} for key in ("makespan_ms", "total_work_ms", "critical_path_ms", "worker_lower_bound_ms")},
+            "snapshot": records},
+        "rank_dependency_bottlenecks": {"record_id": {"type": "string"}, "node_count": {"type": "integer"},
+            "ranking": {"type": "array", "maxItems": 20, "items": {"type": "object",
+                "required": ["record_id", "impacted_count", "direct_dependents", "unresolved_dependents", "downstream_depth"],
+                "properties": {"record_id": {"type": "string"}, **{key: {"type": "integer", "minimum": 0}
+                    for key in ("impacted_count", "direct_dependents", "unresolved_dependents", "downstream_depth")}}}}, "snapshot": records},
         "read_file": {"text": {"type": "string"}},
         "fetch_logs": {"text": {"type": "string"}},
         "list_directory": {"entries": {"type": "array", "items": {"type": "string"}}},

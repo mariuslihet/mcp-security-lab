@@ -69,15 +69,26 @@ SCHEMAS["simulate_dependency_outage"]["properties"]["failed_records"].update(
     minItems=1, maxItems=16, uniqueItems=True, items={"type": "string", "pattern": "^[A-Z]+-[0-9]{3}$"})
 SCHEMAS["plan_recovery"] = schema(record_id="string", max_parallel="integer")
 SCHEMAS["plan_recovery"]["properties"]["max_parallel"].update(minimum=1, maximum=16)
+SCHEMAS["simulate_recovery_timeline"] = copy.deepcopy(SCHEMAS["plan_recovery"])
+SCHEMAS["simulate_recovery_timeline"]["properties"]["durations"] = {"type": "array", "maxItems": 128,
+    "items": {"type": "object", "additionalProperties": False, "required": ["record_id", "investigate_ms", "resolve_ms"],
+              "properties": {"record_id": {"type": "string"}, "investigate_ms": {"type": "integer", "minimum": 1, "maximum": 1000},
+                             "resolve_ms": {"type": "integer", "minimum": 1, "maximum": 1000}}}}
+SCHEMAS["simulate_recovery_timeline"]["required"].append("durations")
+SCHEMAS["rank_dependency_bottlenecks"] = schema(record_id="string", limit="integer")
+SCHEMAS["rank_dependency_bottlenecks"]["properties"]["limit"].update(minimum=1, maximum=20)
 SCHEMAS["incident_bundle"] = schema(record_id="string")
 SCHEMAS["set_catalog_profile"] = schema(profile="string", handle="string")
 SCHEMAS["set_catalog_profile"]["properties"]["profile"]["enum"] = ["standard", "compact"]
 DENSE_TOOLS = {"search_documents", "get_record", "update_record", "batch_update_records",
                "preview_updates", "plan_resolution", "list_records", "inspect_client_roots",
                "sample_incident", "request_incident_input", "guided_update_record", "analyze_dependencies",
-               "incident_bundle", "set_catalog_profile", "get_client_root_status", "simulate_dependency_outage", "plan_recovery"}
+               "incident_bundle", "set_catalog_profile", "get_client_root_status", "simulate_dependency_outage", "plan_recovery",
+               "simulate_recovery_timeline", "rank_dependency_bottlenecks"}
 
 DESCRIPTIONS = {
+    "simulate_recovery_timeline": "Simulate recovery with 1 to 16 workers and per-incident investigate_ms/resolve_ms durations (1 to 1000). Supply durations=[] for 1 ms defaults. Overrides must be distinct members of the target prerequisite closure. Returns worker events, makespan, total work, critical-path and worker lower bounds, and snapshots. Read-only and deterministic; stale versions require replanning.",
+    "rank_dependency_bottlenecks": "Rank incidents within the target prerequisite closure by downstream impact, unresolved dependents, and ID. Returns up to 20 entries with direct fanout, deduplicated impacted count, downstream depth, and versioned closure snapshots. This structural ranking does not estimate outage probability.",
     "simulate_dependency_outage": "Simulate failures of 1 to 16 distinct incidents without modifying state. Returns downstream impact waves, shortest causal paths, versioned affected records, and unaffected count. All dependency edges propagate failure regardless of current status.",
     "plan_recovery": "Build a read-only versioned recovery schedule for an incident and its prerequisite closure. max_parallel (1 to 16) bounds each wave. Complete a wave before starting the next; its individual updates may run concurrently. This is a snapshot, not a reservation: replan after competing writes.",
     "read_file": "Read a UTF-8 file in the simulation workspace.",
@@ -202,7 +213,8 @@ class Firewall:
         if name == "calculate":
             calculate(args["expression"])
         if name in ("get_record", "plan_resolution", "update_record", "batch_update_records", "preview_updates",
-                    "sample_incident", "request_incident_input", "guided_update_record", "analyze_dependencies", "incident_bundle", "plan_recovery"):
+                    "sample_incident", "request_incident_input", "guided_update_record", "analyze_dependencies", "incident_bundle", "plan_recovery",
+                    "simulate_recovery_timeline", "rank_dependency_bottlenecks"):
             records = args["updates"] if name in ("batch_update_records", "preview_updates") else [args]
             if any(record["record_id"] not in self.config.get("allowed_records", []) for record in records):
                 raise Denied("record_not_authorized")

@@ -186,6 +186,14 @@ async def native_matrix(directory: Path, mode: str, transport: str):
         record("mcp_recovery_schedule", not recovery.isError and recovery.structuredContent["total_updates"] == 12
                and all(len(wave) <= 2 for wave in recovery.structuredContent["waves"])
                and Path(config["state_path"]).read_bytes() == before, feature="Recovery planning", response=recovery.model_dump(mode="json"))
+        timeline = await session.call_tool(prefix + "simulate_recovery_timeline", {"record_id": "WF-006", "max_parallel": 2, "durations": []})
+        record("mcp_timed_recovery", not timeline.isError and len(timeline.structuredContent["events"]) == 12
+               and timeline.structuredContent["makespan_ms"] >= timeline.structuredContent["critical_path_ms"],
+               feature="Timed recovery", response=timeline.model_dump(mode="json"))
+        bottlenecks = await session.call_tool(prefix + "rank_dependency_bottlenecks", {"record_id": "WF-006", "limit": 3})
+        record("mcp_dependency_bottlenecks", not bottlenecks.isError and bottlenecks.structuredContent["node_count"] == 6
+               and len(bottlenecks.structuredContent["ranking"]) == 3 and Path(config["state_path"]).read_bytes() == before,
+               feature="Dependency bottlenecks", response=bottlenecks.model_dump(mode="json"))
 
     for row in rows:
         row.update(mode=mode, transport=transport, evaluation="protocol", suite="dense",
