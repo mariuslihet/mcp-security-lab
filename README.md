@@ -156,6 +156,16 @@ Generate a graph campaign with branching paths, shared prerequisites, cross-laye
 
 Graph campaigns support 8–128 generated nodes, widths of 2–8, and 2–32 concurrent requests. They verify complete state and receipt contents after each action, check concurrent results against a legal serialization, and count resource-update and catalog-change notifications. Manifests preserve the graph and race groups for replay; a different race winner is acceptable only if every outcome matches a legal execution.
 
+Two more MCP capabilities are available: stateful **Streamable HTTP** connections and live **client-root change notifications**. Root inspections expose per-session generations and refresh status through `get_client_root_status`. Hardened guided writes recheck workspace declarations after approval, including changes made without a notification. See [HTTP and live roots](docs/http-live-roots.md).
+
+The graph tools now also include **`simulate_dependency_outage`**, which traces multi-node failure cascades and shortest causal paths, and **`plan_recovery`**, which builds versioned recovery waves under a concurrency budget. Add `--campaign-outage-stress` to graph campaigns to exercise both throughout the workload. See [outage simulation and recovery planning](docs/outage-recovery.md).
+
+For mixed disjoint/overlapping transactions, weaker-handle probes, workspace withdrawal, and notified or silent approval-time root drift across all three transports:
+
+```powershell
+& .\.venv\Scripts\python.exe tests\eval_matrix.py --suite all --protocol-only --transport all --campaign-graph-nodes 64 --campaign-graph-width 8 --campaign-steps 100 --campaign-race-topology mixed --campaign-root-churn --parallel-calls 24 --distractors 60 --output runs\http-roots-chaos
+```
+
 The dashboard includes the generated topology and per-check analysis. New dense tools include `analyze_dependencies` for layers and critical paths, `incident_bundle` for MCP resource-link results, and `set_catalog_profile` for dynamic catalog discovery. Switching profiles emits native tools/resources/prompts list-change notifications and disables compact-profile mutation tools until restoration.
 
 See [dependency graph campaigns](docs/dependency-graph-campaigns.md) for graph bounds, recovery waves, stress checks, and catalog control.
@@ -203,11 +213,14 @@ Protocol checks run once for each server and transport combination. Every select
 | Option | Default | Purpose |
 |---|---|---|
 | `--output` | `runs/latest` | New folder for reports and evidence |
-| `--transport` | `stdio` | `stdio`, `sse`, or `both` |
+| `--transport` | `stdio` | `stdio`, `sse`, `streamable-http`, `both` (stdio/SSE), or `all` (all three) |
 | `--suite` | `core` | `core`, `dense`, or `all`; selects protocol and actor suites |
 | `--distractors` | `8` | Background documents in dense retrieval scenarios; 0–100 |
 | `--parallel-calls` | `8` | Concurrent single and batch writes in dense protocol checks; 2–32 |
 | `--campaign-steps` | `0` | Additional seeded guided-update actions per arm and transport; 0–200 |
+| `--campaign-race-topology` | `shared` | `mixed` adds disjoint and partially overlapping graph batches with competing handle authority |
+| `--campaign-root-churn` | Off | Add workspace-root withdrawal, restoration, and approval-time drift to graph campaigns |
+| `--campaign-outage-stress` | Off | Add multi-node outage simulations and recovery plans at changing campaign snapshots |
 | `--campaign-seed` | `7` | Reproducible campaign generator seed |
 | `--campaign-graph-nodes` | `0` | Use a dependency-graph campaign with 8–128 nodes; 0 keeps independent-record campaigns |
 | `--campaign-graph-width` | `4` | Generated graph layer width, 2–8; must be smaller than node count |
@@ -389,7 +402,7 @@ Run the JavaScript comparison tests:
 node --test tests\dashboard.test.cjs
 ```
 
-The Python suite covers policies, filesystem boundaries, replay protection, both transports, direct hardened-server access, rejection recovery, and report generation. The JavaScript tests cover report validation, comparison denominators, missing grades, scope differences, and CSV escaping.
+The Python suite covers policies, filesystem boundaries, replay protection, all three transports, HTTP session isolation, live roots, mixed transaction races, checkpoint recovery, direct hardened-server access, and report generation. The JavaScript tests cover report validation, comparison denominators, missing grades, scope differences, and CSV escaping.
 
 The dense tests additionally check transaction rollback, overlapping batches, nested argument validation, persisted retry receipts across store restarts, state-file write failures, ordered document exposure, and read-only task grading. Workflow tests cover dependency cycles, final-state validation, previews, cursor integrity, pagination scope, and query recovery. Focus on those checks with:
 

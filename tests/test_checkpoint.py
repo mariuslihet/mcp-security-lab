@@ -8,6 +8,22 @@ from simlab.checkpoint import canonical, load_checkpoint
 from simlab.graph_campaign import generate_graph_manifest, graph_campaign_matrix
 
 
+def test_http_checkpoint_preserves_withdrawn_workspace_roots(tmp_path):
+    manifest = generate_graph_manifest(19, 50, nodes=16, width=4, parallel_calls=8,
+                                       race_topology="mixed", root_churn=True)
+    stop = next(index + 1 for index, action in enumerate(manifest["actions"]) if action["label"] == "workspace_withdrawn")
+    source, target = tmp_path / "source", tmp_path / "target"
+    partial = asyncio.run(graph_campaign_matrix(source, "hardened", "streamable-http", manifest, stop_after=stop))
+    assert all(row["passed"] for row in partial)
+    _, checkpoint = load_checkpoint(source / "checkpoint.json")
+    assert checkpoint["client_root_mode"] == "outside"
+    rows = asyncio.run(graph_campaign_matrix(target, "hardened", "streamable-http", manifest,
+                                            resume_checkpoint=source / "checkpoint.json"))
+    assert all(row["passed"] for row in rows)
+    assert rows[stop]["action"]["label"] == "root_boundary_denied"
+    assert rows[stop]["responses"][0]["isError"]
+
+
 @pytest.mark.parametrize("mode", ["hardened", "vulnerable"])
 @pytest.mark.parametrize("transport", ["stdio", "sse"])
 @pytest.mark.parametrize("boundary", ["compact_catalog", "start_wave"])

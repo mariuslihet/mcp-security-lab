@@ -5,6 +5,7 @@ import json
 import asyncio
 import re
 import weakref
+from contextvars import ContextVar
 
 import anyio
 from mcp import types
@@ -18,11 +19,13 @@ CATALOG_URI = "lab://incidents/catalog"
 COMPACT_DISABLED = {"update_record", "batch_update_records", "guided_update_record", "preview_updates",
                     "sample_incident", "request_incident_input", "inspect_client_roots"}
 LOG_LEVELS = ("debug", "info", "notice", "warning", "error", "critical", "alert", "emergency")
+NOTIFICATION_SESSION = ContextVar("simlab_notification_session", default=None)
 CLIENT_REQUEST_TOOLS = {"inspect_client_roots", "sample_incident", "request_incident_input", "guided_update_record"}
 READ_ONLY_TOOLS = {"read_file", "list_directory", "fetch_logs", "calculate", "search_documents",
                    "get_record", "list_records", "plan_resolution", "preview_updates", "inspect_client_roots",
                    "sample_incident", "request_incident_input"}
-READ_ONLY_TOOLS |= {"analyze_dependencies", "incident_bundle"}
+READ_ONLY_TOOLS |= {"analyze_dependencies", "incident_bundle", "get_client_root_status"}
+READ_ONLY_TOOLS |= {"simulate_dependency_outage", "plan_recovery"}
 RECORD_SCHEMA = {"type": "object", "required": ["id", "status", "version"], "properties": {
     "id": {"type": "string"}, "status": {"enum": ["open", "investigating", "resolved"]},
     "version": {"type": "integer", "minimum": 1}}}
@@ -58,9 +61,22 @@ def output_schema(name):
         "analyze_dependencies": {"record_id": {"type": "string"}, "node_count": {"type": "integer"},
             "edge_count": {"type": "integer"}, "layers": {"type": "array"}, "critical_path": {"type": "array"},
             "unresolved": {"type": "array"}},
+        "simulate_dependency_outage": {"failed_records": {"type": "array", "items": {"type": "string"}},
+            "impacted_records": {"type": "array", "items": {"type": "string"}}, "waves": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}},
+            "paths": {"type": "object", "additionalProperties": {"type": "array", "items": {"type": "string"}}},
+            "unaffected_count": {"type": "integer", "minimum": 0}, "snapshot": records},
+        "plan_recovery": {"record_id": {"type": "string"}, "max_parallel": {"type": "integer", "minimum": 1, "maximum": 16},
+            "waves": {"type": "array", "items": {"type": "array", "minItems": 1, "maxItems": 16,
+                "items": {"type": "object", "required": ["record_id", "expected_version", "status"], "properties": {
+                    "record_id": {"type": "string"}, "expected_version": {"type": "integer", "minimum": 1},
+                    "status": {"enum": ["investigating", "resolved"]}}}}},
+            "total_updates": {"type": "integer", "minimum": 0}, "snapshot": records},
         "incident_bundle": {"record": RECORD_SCHEMA, "resources": {"type": "array", "items": {"type": "string"}}},
         "set_catalog_profile": {"profile": {"enum": ["standard", "compact"]}, "changed": {"type": "boolean"}},
-        "inspect_client_roots": {"roots": {"type": "array"}, "workspace_advertised": {"type": "boolean"}},
+        "inspect_client_roots": {"roots": {"type": "array"}, "workspace_advertised": {"type": "boolean"},
+                                 "generation": {"type": "integer"}, "dirty": {"type": "boolean"}},
+        "get_client_root_status": {"generation": {"type": "integer"}, "dirty": {"type": "boolean"},
+            "has_snapshot": {"type": "boolean"}, "last_workspace_advertised": {"type": ["boolean", "null"]}},
         "sample_incident": {"record_id": {"type": "string"}, "summary": {"type": "string"}, "model": {"type": "string"}},
         "request_incident_input": {"record_id": {"type": "string"}, "action": {"enum": ["accept", "decline", "cancel"]},
                                    "content": {"type": ["object", "null"]}},
@@ -74,6 +90,15 @@ def output_schema(name):
 
 class SimulationServer(Server):
     """The low-level SDK defaults subscribe=False even with registered handlers."""
+
+    async def _handle_message(self, message, session, lifespan_context, raise_exceptions=False):
+        # The pinned SDK supplies a session to request handlers, but not notification
+        # handlers. Scope it here so client notifications never affect another session.
+        token = NOTIFICATION_SESSION.set(session)
+        try:
+            await super()._handle_message(message, session, lifespan_context, raise_exceptions)
+        finally:
+            NOTIFICATION_SESSION.reset(token)
 
     def get_capabilities(self, notification_options, experimental_capabilities):
         result = super().get_capabilities(notification_options, experimental_capabilities)

@@ -16,6 +16,8 @@ from mcp.client.stdio import stdio_client
 @asynccontextmanager
 async def connect(config: Path, mode: str, audit: Path, transport="stdio", *, message_handler=None,
                   list_roots_callback=None, sampling_callback=None, elicitation_callback=None, callback_timeout=5):
+    if transport not in ("stdio", "sse", "streamable-http"):
+        raise ValueError("unsupported MCP transport")
     if type(callback_timeout) not in (int, float) or not 0.05 <= callback_timeout <= 30:
         raise ValueError("callback_timeout must be between 0.05 and 30 seconds")
     def protect(callback, result_type):
@@ -36,25 +38,28 @@ async def connect(config: Path, mode: str, audit: Path, transport="stdio", *, me
     errors = audit.with_suffix(".stderr.log").open("w", encoding="utf-8")
     try:
         args = ["-m", "simlab.proxy", "--config", str(config), "--mode", mode, "--audit", str(audit)]
-        if transport == "sse":
+        if transport in ("sse", "streamable-http"):
             with socket.socket() as sock:
                 sock.bind(("127.0.0.1", 0))
                 port = sock.getsockname()[1]
             process = await asyncio.create_subprocess_exec(
                 sys.executable, "-m", mode + "_mcp", "--config", str(config),
-                "--transport", "sse", "--port", str(port), stdout=errors, stderr=errors)
+                "--transport", transport, "--port", str(port), stdout=errors, stderr=errors)
             async with httpx.AsyncClient(trust_env=False) as http:
                 for _ in range(100):
                     if process.returncode is not None:
-                        raise RuntimeError("SSE server exited; inspect stderr log")
+                        raise RuntimeError(f"{transport} server exited; inspect stderr log")
                     try:
                         await http.get(f"http://127.0.0.1:{port}/", timeout=0.2)
                         break
                     except httpx.TransportError:
                         await asyncio.sleep(0.1)
                 else:
-                    raise TimeoutError("SSE server did not start")
-            args += ["--sse-url", f"http://127.0.0.1:{port}/sse"]
+                    raise TimeoutError(f"{transport} server did not start")
+            if transport == "sse":
+                args += ["--sse-url", f"http://127.0.0.1:{port}/sse"]
+            else:
+                args += ["--http-url", f"http://127.0.0.1:{port}/mcp/"]
         parameters = StdioServerParameters(command=sys.executable, args=args,
                                            cwd=str(Path(__file__).resolve().parents[1]))
         async with stdio_client(parameters, errlog=errors) as (reader, writer):

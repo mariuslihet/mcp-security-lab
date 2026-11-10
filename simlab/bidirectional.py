@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+import weakref
 from pathlib import Path
 
 import anyio
@@ -12,6 +13,7 @@ from mcp import types
 from mcp.shared.exceptions import McpError
 
 from .controls import Denied, Firewall, sanitize
+from .mcp_features import NOTIFICATION_SESSION
 
 
 REVIEW_SCHEMA = {"type": "object", "properties": {"reviewed": {"type": "boolean"},
@@ -22,6 +24,30 @@ class BidirectionalFeatures:
     def __init__(self, server, store, config, hardened, journal):
         self.server, self.store, self.config = server, store, config
         self.hardened, self.journal = hardened, journal
+        self.root_generations = weakref.WeakKeyDictionary()
+        self.dirty_roots = weakref.WeakKeyDictionary()
+        self.root_snapshots = weakref.WeakKeyDictionary()
+        if config.get("dense"):
+            server.notification_handlers[types.RootsListChangedNotification] = self.roots_changed
+
+    async def roots_changed(self, notification):
+        session = NOTIFICATION_SESSION.get()
+        if session is not None:
+            if session.client_params is None or session.client_params.capabilities.roots is None:
+                self.journal("client_roots_notification_ignored", reason="capability_not_advertised")
+                return
+            generation = self.root_generations.get(session, 0) + 1
+            self.root_generations[session] = generation
+            self.dirty_roots[session] = True
+            self.journal("client_roots_changed", generation=generation)
+
+    def root_status(self):
+        self.require("roots")
+        session = self.server.request_context.session
+        snapshot = self.root_snapshots.get(session)
+        return {"generation": self.root_generations.get(session, 0), "dirty": self.dirty_roots.get(session, False),
+                "has_snapshot": snapshot is not None,
+                "last_workspace_advertised": snapshot["workspace_advertised"] if snapshot is not None else None}
 
     def require(self, *names):
         params = self.server.request_context.session.client_params
@@ -58,14 +84,19 @@ class BidirectionalFeatures:
     async def roots(self):
         self.require("roots")
         session = self.server.request_context.session
+        generation = self.root_generations.get(session, 0)
         result = await self.request("roots/list", session.list_roots)
         trusted = Path(self.config["root"]).as_uri()
         advertised = [str(root.uri) for root in result.roots]
         if len(advertised) > 100 or len(set(advertised)) != len(advertised):
             raise Denied("client_roots_invalid")
+        if generation != self.root_generations.get(session, 0):
+            raise Denied("client_roots_changed_during_refresh")
+        self.dirty_roots[session] = False
+        self.root_snapshots[session] = {"workspace_advertised": trusted in advertised}
         # Roots are a UI boundary declaration, never permission to read arbitrary paths.
-        return {"roots": [{"uri": uri, "trusted_workspace": uri == trusted} for uri in advertised],
-                "workspace_advertised": trusted in advertised}
+        return {"roots": [{"uri": uri, "trusted_workspace": uri == trusted} for uri in sorted(advertised)],
+                "workspace_advertised": trusted in advertised, "generation": generation, "dirty": False}
 
     async def sample(self, record_id):
         self.require("sampling")
@@ -111,11 +142,13 @@ class BidirectionalFeatures:
         if self.hardened:
             await self.store.preview_updates({"updates": [proposal], "handle": arguments["handle"]}, True)
         roots = await self.roots()
+        generation = roots["generation"]
         if self.hardened and not roots["workspace_advertised"]:
             raise Denied("workspace_root_not_advertised")
         await self.sample(arguments["record_id"])
         # A fresh challenge binds consent to this session, operation, and complete request.
         digest = hashlib.sha256(json.dumps({"session": self.config["session"], "arguments": arguments,
+                                           "roots_generation": generation, "roots": roots["roots"],
                                            "nonce": secrets.token_hex(16)}, sort_keys=True).encode()).hexdigest()
         schema = {"type": "object", "properties": {"confirm": {"type": "boolean"},
             "request_digest": {"type": "string", "enum": [digest]}},
@@ -123,6 +156,15 @@ class BidirectionalFeatures:
         response = await self.elicit("Confirm exactly this synthetic incident update: " + json.dumps(proposal, sort_keys=True), schema)
         if response.action != "accept" or response.content["confirm"] is not True:
             return {"committed": False, "action": response.action if response.action != "accept" else "decline"}
+        if self.hardened:
+            session = self.server.request_context.session
+            if self.root_generations.get(session, 0) != generation or self.dirty_roots.get(session, False):
+                raise Denied("client_roots_changed_during_approval")
+            refreshed = await self.roots()
+            if not refreshed["workspace_advertised"]:
+                raise Denied("workspace_root_not_advertised")
+            if refreshed["generation"] != generation or refreshed["roots"] != roots["roots"]:
+                raise Denied("client_roots_changed_during_approval")
         result = await self.store.guided_update(arguments, self.hardened)
         self.journal("guided_update_committed", record_id=arguments["record_id"], deduplicated=result["deduplicated"])
         return result

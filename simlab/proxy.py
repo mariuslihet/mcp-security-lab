@@ -31,7 +31,23 @@ class Audit:
 
 
 @asynccontextmanager
-async def downstream(config_path: str, mode: str, url: str | None):
+async def downstream(config_path: str, mode: str, url: str | None, http_url: str | None = None):
+    if http_url:
+        import httpx
+        from mcp.client.streamable_http import streamable_http_client
+        from mcp.shared.message import SessionMessage
+        from mcp.types import JSONRPCMessage
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30, read=300), trust_env=False) as http:
+            async with streamable_http_client(http_url, http_client=http) as (reader, writer, get_session_id):
+                async def send(payload):
+                    await writer.send(SessionMessage(JSONRPCMessage.model_validate(payload)))
+                async def receive():
+                    async for item in reader:
+                        if isinstance(item, Exception):
+                            raise item
+                        yield item.message.model_dump(mode="json", by_alias=True, exclude_none=True)
+                yield send, receive
+        return
     if url:
         from mcp.client.sse import sse_client
         from mcp.shared.message import SessionMessage
@@ -71,17 +87,18 @@ async def downstream(config_path: str, mode: str, url: str | None):
                     await proc.wait()
 
 
-async def run(config_path: str, mode: str, audit_path: str, url: str | None):
+async def run(config_path: str, mode: str, audit_path: str, url: str | None, http_url: str | None = None):
     firewall = Firewall(load_config(config_path))
     audit = Audit(Path(audit_path))
     pending = {}
+    audit.record("transport", {"kind": "streamable-http" if http_url else "sse" if url else "stdio", "endpoint": http_url or url})
 
     def output(payload):
         audit.record("client_receive", payload)
         sys.stdout.write(json.dumps(payload, ensure_ascii=True) + "\n")
         sys.stdout.flush()
 
-    async with downstream(config_path, mode, url) as (send, receive):
+    async with downstream(config_path, mode, url, http_url) as (send, receive):
         async def requests():
             # A thread reads the real pipe on Windows, where add_reader is unsupported.
             while line := await asyncio.to_thread(sys.stdin.buffer.readline):
@@ -142,8 +159,11 @@ def main():
     parser.add_argument("--mode", choices=["vulnerable", "hardened"], required=True)
     parser.add_argument("--audit", required=True)
     parser.add_argument("--sse-url")
+    parser.add_argument("--http-url")
     args = parser.parse_args()
-    asyncio.run(run(args.config, args.mode, args.audit, args.sse_url))
+    if args.sse_url and args.http_url:
+        parser.error("choose one downstream HTTP transport")
+    asyncio.run(run(args.config, args.mode, args.audit, args.sse_url, args.http_url))
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ from .fixtures import RESOURCE_URI
 from .state import IncidentStore
 from .mcp_features import CATALOG_URI, CLIENT_REQUEST_TOOLS, NativeFeatures, READ_ONLY_TOOLS, SimulationServer, output_schema
 from .bidirectional import BidirectionalFeatures
+from .graph_operations import GraphOperations
 
 
 def create_server(config: dict, hardened: bool) -> Server:
@@ -33,6 +34,7 @@ def create_server(config: dict, hardened: bool) -> Server:
                                   "event": event, **details}, ensure_ascii=True) + "\n")
 
     store = IncidentStore(config, journal)
+    graph_operations = GraphOperations(store, config, hardened)
     native = NativeFeatures(server, store, config, hardened, journal)
     bidirectional = BidirectionalFeatures(server, store, config, hardened, journal)
     if config.get("dense"):
@@ -163,10 +165,16 @@ def create_server(config: dict, hardened: bool) -> Server:
                 value = await native.set_catalog(arguments)
             elif name == "analyze_dependencies":
                 value = store.analyze_dependencies(arguments["record_id"], hardened)
+            elif name == "simulate_dependency_outage":
+                value = graph_operations.failure_cascade(arguments)
+            elif name == "plan_recovery":
+                value = graph_operations.plan_recovery(arguments)
             elif name == "incident_bundle":
                 plan = store.plan_resolution(arguments["record_id"], hardened)
                 value = {"record": store.read(arguments["record_id"]),
                          "resources": ["lab://incidents/" + step["record"]["id"] for step in plan["steps"]]}
+            elif name == "get_client_root_status":
+                value = bidirectional.root_status()
             elif name == "inspect_client_roots":
                 value = await bidirectional.roots()
             elif name == "sample_incident":
@@ -241,11 +249,26 @@ def create_server(config: dict, hardened: bool) -> Server:
 def main(hardened: bool):
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
-    parser.add_argument("--transport", choices=["stdio", "sse"], default="stdio")
+    parser.add_argument("--transport", choices=["stdio", "sse", "streamable-http"], default="stdio")
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
     server = create_server(load_config(args.config), hardened)
-    if args.transport == "sse":
+    if args.transport == "streamable-http":
+        import uvicorn
+        from contextlib import asynccontextmanager
+        from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+        from mcp.server.transport_security import TransportSecuritySettings
+        from starlette.applications import Starlette
+        from starlette.routing import Mount
+        manager = StreamableHTTPSessionManager(server, stateless=False, security_settings=TransportSecuritySettings(
+            allowed_hosts=["127.0.0.1:*", "localhost:*"], allowed_origins=["http://127.0.0.1:*", "http://localhost:*"]))
+        @asynccontextmanager
+        async def lifespan(app):
+            async with manager.run():
+                yield
+        app = Starlette(routes=[Mount("/mcp", app=manager.handle_request)], lifespan=lifespan)
+        uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
+    elif args.transport == "sse":
         import uvicorn
         from mcp.server.sse import SseServerTransport
         from starlette.applications import Starlette

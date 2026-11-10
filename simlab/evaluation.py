@@ -220,6 +220,11 @@ async def run(args):
                   "campaign_steps": len(replay["actions"]) if replay else args.campaign_steps,
                   "campaign_seed": replay["seed"] if replay else args.campaign_seed,
                   "campaign_graph_nodes": len(campaign_graph) if replay else args.campaign_graph_nodes,
+                  "campaign_race_topology": "saved manifest" if replay else args.campaign_race_topology,
+                  "campaign_root_churn": any(action.get("kind") in ("roots_change", "guided_drift") for action in replay["actions"])
+                      if replay else args.campaign_root_churn,
+                  "campaign_outage_stress": any(action.get("tool") in ("simulate_dependency_outage", "plan_recovery") for action in replay["actions"])
+                      if replay else args.campaign_outage_stress,
                   "campaign_graph_width": max(map(len, validate_graph(campaign_graph))) if campaign_graph else
                       args.campaign_graph_width if args.campaign_graph_nodes and not replay else 0,
                   "campaign_max_concurrency": max((len(action["requests"]) for action in replay["actions"] if action.get("kind") == "race"), default=1)
@@ -248,7 +253,7 @@ async def run(args):
         write_reports(report, output)
 
     checkpoint()
-    transports = ["stdio", "sse"] if args.transport == "both" else [args.transport]
+    transports = ["stdio", "sse", "streamable-http"] if args.transport == "all" else ["stdio", "sse"] if args.transport == "both" else [args.transport]
     for transport in transports:
         for mode in ("vulnerable", "hardened"):
             print(f"Protocol evaluation: {transport} / {mode}", flush=True)
@@ -267,7 +272,8 @@ async def run(args):
                                                       seed=args.campaign_seed, steps=args.campaign_steps,
                                                       manifest_path=Path(args.replay_campaign) if args.replay_campaign else None,
                                                       graph_nodes=args.campaign_graph_nodes, graph_width=args.campaign_graph_width,
-                                                      parallel_calls=args.parallel_calls)
+                                                      parallel_calls=args.parallel_calls, race_topology=args.campaign_race_topology,
+                                                      root_churn=args.campaign_root_churn, outage_stress=args.campaign_outage_stress)
             except Exception as exc:
                 rows.append({"case": "protocol_infrastructure", "evaluation": "protocol", "mode": mode,
                              "transport": transport, "kind": "infrastructure", "passed": False,
@@ -324,7 +330,7 @@ def bounded_int(minimum: int, maximum: int):
 def main():
     parser = argparse.ArgumentParser(description="Real MCP/LLM simulation matrix")
     parser.add_argument("--output", default="runs/latest")
-    parser.add_argument("--transport", choices=["stdio", "sse", "both"], default="stdio")
+    parser.add_argument("--transport", choices=["stdio", "sse", "streamable-http", "both", "all"], default="stdio")
     parser.add_argument("--suite", choices=["core", "dense", "all"], default="core")
     parser.add_argument("--distractors", type=bounded_int(0, 100), default=8, help="Background documents in dense scenarios")
     parser.add_argument("--fault-profile", choices=["none", "transient"], default="none", help="Transient failures for actor workflows")
@@ -336,6 +342,10 @@ def main():
                         help="Use a generated dependency graph with 8 to 128 nodes instead of independent records")
     parser.add_argument("--campaign-graph-width", type=bounded_int(2, 8), default=4,
                         help="Maximum width of generated graph layers")
+    parser.add_argument("--campaign-race-topology", choices=["shared", "mixed"], default="shared",
+                        help="Use shared-write or mixed partial/disjoint/overlapping graph race groups")
+    parser.add_argument("--campaign-root-churn", action="store_true", help="Change client roots before and during guided approvals")
+    parser.add_argument("--campaign-outage-stress", action="store_true", help="Simulate multi-node outages and bounded recovery plans during graph campaigns")
     parser.add_argument("--replay-campaign", help="Replay an exported campaign.json instead of generating actions")
     parser.add_argument("--protocol-only", action="store_true", help="Only fixed real-transport probes; explicitly does not evaluate LLM behavior")
     parser.add_argument("--backend", choices=["ollama", "openai"], default="ollama")
@@ -356,9 +366,12 @@ def main():
         try:
             from .graph_campaign import generate_graph_manifest
             generate_graph_manifest(args.campaign_seed, args.campaign_steps, nodes=args.campaign_graph_nodes,
-                                    width=args.campaign_graph_width, parallel_calls=args.parallel_calls)
+                                    width=args.campaign_graph_width, parallel_calls=args.parallel_calls,
+                                    race_topology=args.campaign_race_topology, root_churn=args.campaign_root_churn, outage_stress=args.campaign_outage_stress)
         except ValueError as exc:
             parser.error(str(exc))
+    if (args.campaign_race_topology != "shared" or args.campaign_root_churn or args.campaign_outage_stress) and not (args.campaign_graph_nodes or args.replay_campaign):
+        parser.error("advanced race/root profiles require a graph campaign")
     if args.replay_campaign:
         try:
             read_manifest(Path(args.replay_campaign))

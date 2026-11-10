@@ -51,6 +51,7 @@ def save_checkpoint(directory, manifest, mode, transport, config, oracle, rows):
     payload = {"schema_version": 1, "manifest_sha256": hashlib.sha256(canonical(manifest)).hexdigest(),
         "mode": mode, "transport": transport, "session": config["session"], "next_action": len(rows),
         "state": state, "faults": oracle.faults, "catalog_profile": oracle.profile, "rows": normalized, "evidence": evidence}
+    payload["client_root_mode"] = oracle.root_mode
     envelope = {"payload": payload, "sha256": hashlib.sha256(canonical(payload)).hexdigest()}
     temporary = directory / "checkpoint.json.tmp"
     temporary.write_text(json.dumps(envelope, indent=2), encoding="utf-8")
@@ -81,9 +82,10 @@ def load_checkpoint(path):
     if hashlib.sha256(canonical(payload)).hexdigest() != envelope["sha256"]:
         raise ValueError("checkpoint integrity mismatch")
     required = {"schema_version", "manifest_sha256", "mode", "transport", "session", "next_action", "state", "faults", "catalog_profile", "rows", "evidence"}
-    if not isinstance(payload, dict) or set(payload) != required or payload["schema_version"] != 1:
+    if (not isinstance(payload, dict) or not required <= set(payload) or set(payload) - required - {"client_root_mode"}
+            or payload["schema_version"] != 1 or payload.get("client_root_mode", "workspace") not in ("workspace", "outside", "empty")):
         raise ValueError("invalid checkpoint payload")
-    if (payload["mode"] not in ("hardened", "vulnerable") or payload["transport"] not in ("stdio", "sse")
+    if (payload["mode"] not in ("hardened", "vulnerable") or payload["transport"] not in ("stdio", "sse", "streamable-http")
             or not isinstance(payload["session"], str) or not re.fullmatch(r"[a-f0-9]{32}", payload["session"])
             or type(payload["next_action"]) is not int or not isinstance(payload["rows"], list)
             or not 0 <= payload["next_action"] <= 200 or len(payload["rows"]) != payload["next_action"]
@@ -123,10 +125,15 @@ def rebuild_oracle(oracle, manifest, payload):
     from .graph_campaign import matches
     for index, row in enumerate(payload["rows"]):
         action, responses = manifest["actions"][index], row.get("responses", [])
-        if action["kind"] == "call":
+        if action["kind"] in ("call", "guided_drift", "roots_change"):
             if len(responses) != 1:
                 raise ValueError("invalid checkpoint response count")
-            expected = oracle.call(action["tool"], action["arguments"], action["approval"])
+            if action["kind"] == "roots_change":
+                expected = oracle.roots_changed(action["mode"])
+            else:
+                drift = action["kind"] == "guided_drift"
+                expected = oracle.call("guided_update_record" if drift else action["tool"], action["arguments"],
+                                       "accept" if drift else action["approval"], roots_drift=drift)
             if not matches(expected, types.CallToolResult.model_validate(responses[0]), oracle.graph):
                 raise ValueError("checkpoint response fails reference oracle")
         else:
@@ -139,7 +146,8 @@ def rebuild_oracle(oracle, manifest, payload):
                 if not matches(expected, types.CallToolResult.model_validate(responses[request_index]), oracle.graph):
                     raise ValueError("checkpoint race fails reference oracle")
     if (payload["state"] != {"records": oracle.records, "receipts": oracle.receipts}
-            or payload["faults"] != oracle.faults or payload["catalog_profile"] != oracle.profile):
+            or payload["faults"] != oracle.faults or payload["catalog_profile"] != oracle.profile
+            or payload.get("client_root_mode", "workspace") != oracle.root_mode):
         raise ValueError("checkpoint state fails reference oracle")
 
 

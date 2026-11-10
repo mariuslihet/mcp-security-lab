@@ -19,7 +19,7 @@ from .fixtures import CATALOG_HANDLE, WRITE_HANDLE, create_fixture
 
 
 GRAPH_TOOLS = ("batch_update_records", "update_record", "guided_update_record", "preview_updates", "get_record",
-               "analyze_dependencies", "incident_bundle", "set_catalog_profile")
+               "analyze_dependencies", "incident_bundle", "set_catalog_profile", "simulate_dependency_outage", "plan_recovery")
 APPROVALS = ("accept", "decline", "cancel", "false", "wrong_digest")
 CALL_SCHEMA = {"oneOf": [{"type": "object", "additionalProperties": False,
     "required": ["kind", "tool", "arguments", "approval", "label"], "properties": {
@@ -28,9 +28,16 @@ CALL_SCHEMA = {"oneOf": [{"type": "object", "additionalProperties": False,
 RACE_SCHEMA = {"type": "object", "required": ["kind", "requests", "label"], "additionalProperties": False, "properties": {
     "kind": {"const": "race"}, "label": {"type": "string", "maxLength": 80},
     "requests": {"type": "array", "minItems": 2, "maxItems": 32, "items": SCHEMAS["batch_update_records"]}}}
+ROOT_CHANGE_SCHEMA = {"type": "object", "required": ["kind", "mode", "label"], "additionalProperties": False,
+    "properties": {"kind": {"const": "roots_change"}, "mode": {"enum": ["workspace", "outside", "empty"]},
+                   "label": {"type": "string", "maxLength": 80}}}
+ROOT_DRIFT_SCHEMA = {"type": "object", "required": ["kind", "arguments", "notify", "label"], "additionalProperties": False,
+    "properties": {"kind": {"const": "guided_drift"}, "arguments": SCHEMAS["guided_update_record"],
+                   "notify": {"type": "boolean"}, "label": {"type": "string", "maxLength": 80}}}
 GRAPH_MANIFEST_SCHEMA = {"type": "object", "required": ["schema_version", "seed", "graph", "actions"], "additionalProperties": False,
     "properties": {"schema_version": {"const": 2}, "seed": {"type": "integer"}, "graph": {"type": "object"},
-        "actions": {"type": "array", "minItems": 1, "maxItems": 200, "items": {"oneOf": [CALL_SCHEMA, RACE_SCHEMA]}}}}
+        "actions": {"type": "array", "minItems": 1, "maxItems": 200,
+                    "items": {"oneOf": [CALL_SCHEMA, RACE_SCHEMA, ROOT_CHANGE_SCHEMA, ROOT_DRIFT_SCHEMA]}}}}
 
 
 def validate_graph_manifest(manifest):
@@ -39,26 +46,28 @@ def validate_graph_manifest(manifest):
     validate_graph(manifest["graph"])
     allowed = set(manifest["graph"]) | {"PAY-001"}
     for action in manifest["actions"]:
+        if action["kind"] == "roots_change":
+            continue
         requests = action["requests"] if action["kind"] == "race" else [action["arguments"]]
         for arguments in requests:
+            if any(key not in allowed for key in arguments.get("failed_records", [])):
+                raise ValueError("dependency campaign references an unsupported outage record")
             updates = arguments.get("updates", [arguments])
             if any(item.get("record_id") not in allowed for item in updates if "record_id" in item):
                 raise ValueError("dependency campaign references an unsupported record")
         if action["kind"] == "race":
-            # Every request shares the same two updates, differing only in receipt key.
-            first = action["requests"][0]
-            if len(first["updates"]) != 2 or len({item["record_id"] for item in first["updates"]}) != 2:
-                raise ValueError("graph races require two distinct shared records")
-            if any(request["updates"] != first["updates"] or request["handle"] != first["handle"] for request in action["requests"]):
-                raise ValueError("graph races must share the same update set and authority")
+            if any(len({item["record_id"] for item in request["updates"]}) != len(request["updates"]) for request in action["requests"]):
+                raise ValueError("graph race requests cannot repeat a record within a batch")
             if len({request["idempotency_key"] for request in action["requests"]}) != len(action["requests"]):
                 raise ValueError("graph race request keys must be distinct")
     return manifest
 
 
-def generate_graph_manifest(seed, steps=60, *, nodes=32, width=4, parallel_calls=8):
+def generate_graph_manifest(seed, steps=60, *, nodes=32, width=4, parallel_calls=8, race_topology="shared", root_churn=False, outage_stress=False):
     if type(steps) is not int or not 1 <= steps <= 200 or type(parallel_calls) is not int or not 2 <= parallel_calls <= 32:
         raise ValueError("graph campaigns require 1 to 200 actions and 2 to 32 parallel requests")
+    if race_topology not in ("shared", "mixed") or type(root_churn) is not bool or type(outage_stress) is not bool:
+        raise ValueError("invalid graph campaign stress profile")
     graph = generate_graph(seed, nodes, width)
     layers, rng, actions = validate_graph(graph), random.Random(seed), []
     tip = sorted(graph)[-1]
@@ -74,6 +83,9 @@ def generate_graph_manifest(seed, steps=60, *, nodes=32, width=4, parallel_calls
 
     call("analyze_dependencies", {"record_id": tip}, "initial_analysis")
     call("incident_bundle", {"record_id": tip}, "linked_resources")
+    if outage_stress:
+        call("simulate_dependency_outage", {"failed_records": layers[0][:2]}, "root_outage")
+        call("plan_recovery", {"record_id": tip, "max_parallel": 3}, "initial_recovery_plan")
     call("set_catalog_profile", {"profile": "compact", "handle": CATALOG_HANDLE}, "compact_catalog")
     call("update_record", {**update("GR-000", "investigating", 1), "handle": WRITE_HANDLE, "idempotency_key": "hidden"}, "disabled_tool")
     call("set_catalog_profile", {"profile": "standard", "handle": CATALOG_HANDLE}, "restore_catalog")
@@ -90,28 +102,64 @@ def generate_graph_manifest(seed, steps=60, *, nodes=32, width=4, parallel_calls
     guided(tip, "blocked_tip")
     guided(tip, "blocked_tip")
     guided("GR-002", "declined_review", "decline")
-    shared = [update("GR-000"), update("GR-001")]
+    if root_churn:
+        actions.append({"kind": "roots_change", "mode": "outside", "label": "workspace_withdrawn"})
+        guided("GR-000", "root_boundary_denied")
+        actions.append({"kind": "roots_change", "mode": "workspace", "label": "workspace_restored"})
+        for notify in (True, False):
+            actions.append({"kind": "guided_drift", "arguments": {**update("GR-000"), "handle": WRITE_HANDLE,
+                "idempotency_key": "notified-drift" if notify else "silent-drift"}, "notify": notify,
+                "label": "notified_approval_root_drift" if notify else "silent_approval_root_drift"})
+            actions.append({"kind": "roots_change", "mode": "workspace", "label": "workspace_recovered"})
+    active_roots = ["GR-000", "GR-001"] if race_topology == "shared" else layers[0][:min(max(2, width - 1), parallel_calls)]
+    guided_target = next((key for key in layers[0] if key not in active_roots), "GR-002")
+    shared = [update(key) for key in active_roots]
+    requests = []
+    for index in range(parallel_calls):
+        selected = shared
+        handle = WRITE_HANDLE
+        if race_topology == "mixed":
+            if index < len(active_roots):
+                selected = [update(active_roots[index])]
+            elif index % 4 == 1:
+                selected = [update(key) for key in rng.sample(active_roots, min(2, len(active_roots)))]
+            elif index % 4 == 2:
+                selected = [update(key) for key in rng.sample(active_roots, rng.randint(1, len(active_roots)))]
+            elif index % 4 == 3:
+                selected, handle = [update(active_roots[index % len(active_roots)])], "synthetic-read-handle"
+        requests.append({**batch(copy.deepcopy(selected), f"graph-race-{index}"), "handle": handle})
     race = {"kind": "race", "label": "overlapping_root_resolutions",
-            "requests": [batch(copy.deepcopy(shared), f"graph-race-{index}") for index in range(parallel_calls)]}
+            "requests": requests}
     actions.extend([race, {**copy.deepcopy(race), "label": "replayed_race"}])
     conflict = copy.deepcopy(first_batch)
     conflict["updates"][0]["status"] = "resolved"
     call("batch_update_records", conflict, "receipt_payload_conflict")
-    guided("GR-002", "approved_root")
-    guided("GR-002", "approved_root")
+    guided(guided_target, "approved_root")
+    guided(guided_target, "approved_root")
+    if outage_stress:
+        call("simulate_dependency_outage", {"failed_records": layers[len(layers) // 2][:2]}, "mid_graph_outage")
+        for budget in (1, 16):
+            call("plan_recovery", {"record_id": tip, "max_parallel": budget}, "constrained_recovery_plan")
     for layer in layers:
-        members = [key for key in layer if key not in {"GR-000", "GR-001", "GR-002"}]
+        members = [key for key in layer if key not in set(active_roots) | {guided_target}]
         for offset in range(0, len(members), 16):
             selected = list(reversed(members[offset:offset + 16]))
             call("batch_update_records", batch([update(key) for key in selected], f"resolve-{len(actions)}"), "dependency_wave")
     call("analyze_dependencies", {"record_id": tip}, "completed_analysis")
     call("incident_bundle", {"record_id": tip}, "completed_resources")
+    if outage_stress:
+        call("plan_recovery", {"record_id": tip, "max_parallel": 16}, "completed_recovery_plan")
+        call("simulate_dependency_outage", {"failed_records": ["PAY-001"]}, "protected_outage_probe")
     minimum = len(actions)
     if steps < minimum:
         raise ValueError(f"this graph needs at least {minimum} campaign actions")
     while len(actions) < steps:
         index, key = len(actions), rng.choice(ordered)
-        if index % 5 == 0:
+        if outage_stress and index % 7 == 0:
+            call("simulate_dependency_outage", {"failed_records": rng.sample(ordered, rng.randint(1, min(16, nodes)))}, "multi_fault_outage")
+        elif outage_stress and index % 7 == 1:
+            call("plan_recovery", {"record_id": key, "max_parallel": rng.randint(1, 16)}, "post_stress_recovery")
+        elif index % 5 == 0:
             call("analyze_dependencies", {"record_id": key}, "post_stress_analysis")
         elif index % 5 == 1:
             call("incident_bundle", {"record_id": key}, "post_stress_links")
@@ -133,6 +181,61 @@ class GraphOracle:
         self.allowed, self.graph = set(config["allowed_records"]), config["dependencies"]
         self.session, self.hardened = config["session"], hardened
         self.faults, self.profile = dict(config["faults"]), "standard"
+        self.root_mode = "workspace"
+
+    def roots_changed(self, mode):
+        self.root_mode = mode
+        return {"error": self.profile == "compact", "changed": [], "value": {"workspace_advertised": mode == "workspace"}}
+
+    def graph_preview(self, tool, args):
+        """Independent task-DAG/shortest-path reference, separate from server planning."""
+        unchanged = {"error": True, "changed": []}
+        if tool == "simulate_dependency_outage":
+            failed = sorted(args["failed_records"])
+            if self.hardened and not set(failed) <= self.allowed:
+                return unchanged
+            visible = self.allowed if self.hardened else set(self.records)
+            paths = {key: [key] for key in failed}
+            for _ in range(len(visible)):
+                previous = copy.deepcopy(paths)
+                for key in sorted(visible):
+                    candidates = [previous[parent] + [key] for parent in self.graph.get(key, []) if parent in previous]
+                    if key in previous:
+                        candidates.append(previous[key])
+                    if candidates:
+                        paths[key] = min(candidates, key=lambda path: (len(path), path))
+                if paths == previous:
+                    break
+            selected = sorted(paths)
+            value = {"failed_records": failed, "impacted_records": selected,
+                "waves": [[key for key in selected if len(paths[key]) == depth] for depth in range(1, max(map(len, paths.values())) + 1)],
+                "paths": {key: paths[key] for key in selected}, "unaffected_count": len(visible - set(paths)),
+                "snapshot": [copy.deepcopy(self.records[key]) for key in selected]}
+        else:
+            key = args["record_id"]
+            selected = sorted(self.closure(key))
+            if self.hardened and not set(selected) <= self.allowed:
+                return unchanged
+            tasks, prerequisites = {}, {}
+            for record_id in selected:
+                record = self.records[record_id]
+                for status in (["investigating", "resolved"] if record["status"] == "open" else ["resolved"] if record["status"] == "investigating" else []):
+                    token = (record_id, status)
+                    tasks[token] = {"record_id": record_id, "status": status,
+                        "expected_version": record["version"] + int(status == "resolved" and record["status"] == "open")}
+            for token in tasks:
+                record_id, status = token
+                prerequisites[token] = ({(parent, "resolved") for parent in self.graph.get(record_id, [])}
+                    | {(record_id, "investigating")}) & tasks.keys() if status == "resolved" else set()
+            pending, waves = set(tasks), []
+            while pending:
+                ready = sorted((token for token in pending if not prerequisites[token] & pending),
+                               key=lambda token: (token[1] != "resolved", token[0]))[:args["max_parallel"]]
+                waves.append([tasks[token] for token in ready])
+                pending.difference_update(ready)
+            value = {"record_id": key, "max_parallel": args["max_parallel"], "waves": waves,
+                "total_updates": len(tasks), "snapshot": [copy.deepcopy(self.records[key]) for key in selected]}
+        return {"error": False, "value": value, "changed": []}
 
     def closure(self, key):
         selected, todo = set(), [key]
@@ -143,8 +246,10 @@ class GraphOracle:
                 todo += self.graph.get(current, [])
         return selected
 
-    def call(self, tool, args, approval="accept"):
+    def call(self, tool, args, approval="accept", *, roots_drift=False):
         unchanged = {"error": True, "changed": []}
+        if tool in ("simulate_dependency_outage", "plan_recovery"):
+            return self.graph_preview(tool, args)
         if self.profile == "compact" and tool in {"update_record", "batch_update_records", "guided_update_record", "preview_updates"}:
             return unchanged
         if tool == "set_catalog_profile":
@@ -202,6 +307,13 @@ class GraphOracle:
             return unchanged
         if tool == "preview_updates":
             return {"error": False, "value": {"records": results, "would_commit": True}, "changed": []}
+        if tool == "guided_update_record":
+            if self.hardened and self.root_mode != "workspace":
+                return unchanged
+            if roots_drift:
+                self.root_mode = "outside"
+                if self.hardened:
+                    return unchanged
         if tool == "guided_update_record" and approval != "accept":
             if approval == "wrong_digest":
                 return unchanged
@@ -236,6 +348,83 @@ def matches(expected, result, graph):
     return valid
 
 
+def verify_race(oracle, requests, results, published_receipts):
+    """Find a legal order from per-record version witnesses and dependency constraints.
+
+    Rejections/replays are consumed at the earliest point where the reference
+    model agrees without changing state. They can therefore precede a commit
+    that later removes an unresolved dependency.
+    """
+    witnesses, edges, valid = {}, {}, True
+    for index, (request, result) in enumerate(zip(requests, results)):
+        key = oracle.session + ":" + request["idempotency_key"]
+        receipt = published_receipts.get(key)
+        fingerprint = json.dumps({"operation": "batch_update_records", "arguments": request}, sort_keys=True)
+        value = result.structuredContent or {}
+        if value.get("deduplicated") is True:
+            continue
+        if not result.isError:
+            witnesses[index] = value.get("records", [])
+        elif receipt and receipt.get("fingerprint") == fingerprint and receipt != oracle.receipts.get(key):
+            witnesses[index] = receipt.get("result", {}).get("records", [])
+        if index in witnesses:
+            edges[index] = set()
+    by_record = {}
+    for index, records in witnesses.items():
+        for record in records:
+            by_record.setdefault(record["id"], []).append((record["version"], index))
+    for versions in by_record.values():
+        ordered = sorted(versions)
+        for (version, before), (next_version, after) in zip(ordered, ordered[1:]):
+            if version == next_version:
+                valid = False
+            edges[after].add(before)
+    if oracle.hardened:
+        for index, records in witnesses.items():
+            own = {record["id"]: record for record in records}
+            for record in records:
+                if record["status"] != "resolved":
+                    continue
+                for parent in oracle.graph.get(record["id"], []):
+                    if (parent in own and own[parent]["status"] == "resolved") or oracle.records[parent]["status"] == "resolved":
+                        continue
+                    for other, targets in witnesses.items():
+                        if other != index and any(target["id"] == parent and target["status"] == "resolved" for target in targets):
+                            edges[index].add(other)
+    remaining, commits = set(witnesses), []
+    while remaining:
+        ready = sorted(index for index in remaining if not (edges[index] & remaining))
+        if not ready:
+            valid = False
+            commits.extend(sorted(remaining))
+            break
+        commits.extend(ready)
+        remaining.difference_update(ready)
+    nonmutating = set(range(len(requests))) - set(witnesses)
+    order, changed = [], []
+    def consume_rejections():
+        for index in sorted(list(nonmutating)):
+            trial = copy.deepcopy(oracle)
+            expected = trial.call("batch_update_records", requests[index])
+            if not expected["changed"] and matches(expected, results[index], trial.graph):
+                oracle.faults = trial.faults
+                nonmutating.remove(index)
+                order.append(index)
+    for index in commits:
+        consume_rejections()
+        expected = oracle.call("batch_update_records", requests[index])
+        valid &= matches(expected, results[index], oracle.graph)
+        changed.extend(expected["changed"])
+        order.append(index)
+    consume_rejections()
+    for index in sorted(nonmutating):
+        expected = oracle.call("batch_update_records", requests[index])
+        valid &= matches(expected, results[index], oracle.graph)
+        changed.extend(expected["changed"])
+        order.append(index)
+    return bool(valid), order, changed
+
+
 async def graph_campaign_matrix(directory: Path, mode: str, transport: str, manifest: dict, *,
                                 stop_after: int | None = None, resume_checkpoint: Path | None = None):
     from .checkpoint import canonical, load_checkpoint, rebuild_oracle, restore_history, save_checkpoint
@@ -261,6 +450,7 @@ async def graph_campaign_matrix(directory: Path, mode: str, transport: str, mani
     saved = directory / "campaign.json"
     saved.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     hardened, rows, notifications = mode == "hardened", [], []
+    notification_arrived = asyncio.Event()
     client = ControlledClient(config, directory / "client.jsonl")
     oracle = GraphOracle(config, hardened)
     if resumed:
@@ -270,6 +460,7 @@ async def graph_campaign_matrix(directory: Path, mode: str, transport: str, mani
         config["faults"] = dict(oracle.faults)
         config["initial_catalog_profile"] = oracle.profile
         config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+        client.root_mode = oracle.root_mode
     save_checkpoint(directory, manifest, mode, transport, config, oracle, rows)
     if first == limit:
         return rows
@@ -277,6 +468,7 @@ async def graph_campaign_matrix(directory: Path, mode: str, transport: str, mani
     async def receive(message):
         if isinstance(message, types.ServerNotification):
             notifications.append(message.model_dump(mode="json", by_alias=True))
+            notification_arrived.set()
     async with connect(config_path, mode, directory / "wire.jsonl", transport,
                        message_handler=receive, **client.callbacks()) as session:
         for uri in sorted(subscribed):
@@ -287,10 +479,38 @@ async def graph_campaign_matrix(directory: Path, mode: str, transport: str, mani
             action = manifest["actions"][index]
             start, trace_start = len(notifications), len(client.events)
             expected_notifications, expected_catalog, response_ok = [], 0, True
-            if action["kind"] == "call":
-                client.approval = action["approval"]
-                expected = oracle.call(action["tool"], action["arguments"], action["approval"])
-                result = await call(action["tool"], action["arguments"])
+            root_checks = {}
+            if action["kind"] == "roots_change":
+                before_status = await call("get_client_root_status", {})
+                client.root_mode = action["mode"]
+                await session.send_roots_list_changed()
+                await session.send_ping()
+                after_status = await call("get_client_root_status", {})
+                expected = oracle.roots_changed(action["mode"])
+                result = await call("inspect_client_roots", {})
+                root_valid = (not before_status.isError and not after_status.isError
+                    and after_status.structuredContent["generation"] == before_status.structuredContent["generation"] + 1
+                    and after_status.structuredContent["dirty"] is True)
+                response_ok = root_valid and matches(expected, result, oracle.graph)
+                root_checks = {"root_status_before": before_status.model_dump(mode="json"),
+                               "root_status_after_notification": after_status.model_dump(mode="json"), "root_change_verified": root_valid}
+                responses, expected_summary = [result.model_dump(mode="json")], expected
+            elif action["kind"] in ("call", "guided_drift"):
+                drift = action["kind"] == "guided_drift"
+                tool = "guided_update_record" if drift else action["tool"]
+                approval = "accept" if drift else action["approval"]
+                client.approval = approval
+                if drift:
+                    async def change_roots(context, params):
+                        client.root_mode = "outside"
+                        if action["notify"]:
+                            await context.session.send_roots_list_changed()
+                    client.before_approval = change_roots
+                expected = oracle.call(tool, action["arguments"], approval, roots_drift=drift)
+                try:
+                    result = await call(tool, action["arguments"])
+                finally:
+                    client.before_approval = None
                 response_ok = matches(expected, result, oracle.graph)
                 expected_notifications += ["lab://incidents/" + key for key in expected["changed"]]
                 expected_catalog = int(expected.get("catalog_changed", False))
@@ -298,32 +518,43 @@ async def graph_campaign_matrix(directory: Path, mode: str, transport: str, mani
                 expected_summary = {key: value for key, value in expected.items() if key not in ("resource_set",)}
             else:
                 results = await asyncio.gather(*(call("batch_update_records", request) for request in action["requests"]))
-                shared = action["requests"][0]["updates"][0]["record_id"]
-                def observed_version(index):
-                    value = results[index].structuredContent or {}
-                    return next((record["version"] for record in value.get("records", []) if record["id"] == shared), float("inf"))
-                # A common record's observed versions select a candidate legal serialization.
-                # Every response AND the full saved state/receipts must then agree with it.
-                order = sorted(range(len(results)), key=observed_version)
-                for request_index in order:
-                    expected = oracle.call("batch_update_records", action["requests"][request_index])
-                    response_ok &= matches(expected, results[request_index], oracle.graph)
-                    expected_notifications += ["lab://incidents/" + key for key in expected["changed"]]
+                receipts = json.loads(Path(config["state_path"]).read_text(encoding="utf-8"))["receipts"]
+                response_ok, order, changed = verify_race(oracle, action["requests"], results, receipts)
+                expected_notifications += ["lab://incidents/" + key for key in changed]
                 responses = [result.model_dump(mode="json") for result in results]
-                expected_summary = {"legal_serialization": order, "accepted": sum(not result.isError for result in results)}
+                expected_summary = {"legal_serialization": order, "accepted": sum(not result.isError for result in results),
+                                    "serialization_verified": response_ok}
+            expected_uris = Counter(uri for uri in expected_notifications if uri in subscribed)
+            # HTTP delivers unsolicited notifications on a separate stream. A
+            # tool response is not a delivery barrier for that stream.
+            def notifications_complete():
+                delivered = notifications[start:]
+                updates = Counter(item["params"]["uri"] for item in delivered
+                                  if item.get("method") == "notifications/resources/updated")
+                return (all(updates[uri] >= count for uri, count in expected_uris.items())
+                        and all(sum(item.get("method") == method for item in delivered) >= expected_catalog
+                                for method in ("notifications/tools/list_changed", "notifications/resources/list_changed", "notifications/prompts/list_changed")))
+            try:
+                async with asyncio.timeout(3):
+                    while not notifications_complete():
+                        notification_arrived.clear()
+                        await notification_arrived.wait()
+            except TimeoutError:
+                pass  # Missing deliveries remain assertion failures below.
             actual_state = json.loads(Path(config["state_path"]).read_text(encoding="utf-8"))
             delivered = notifications[start:]
-            expected_uris = Counter(uri for uri in expected_notifications if uri in subscribed)
             actual_uris = Counter(item["params"]["uri"] for item in delivered if item.get("method") == "notifications/resources/updated")
             catalog_methods = ("notifications/tools/list_changed", "notifications/resources/list_changed", "notifications/prompts/list_changed")
             catalog_ok = all(sum(item.get("method") == method for item in delivered) == expected_catalog for method in catalog_methods)
-            state_ok = actual_state["records"] == oracle.records and actual_state["receipts"] == oracle.receipts
+            state_ok = (actual_state["records"] == oracle.records and actual_state["receipts"] == oracle.receipts
+                        and client.root_mode == oracle.root_mode)
             rows.append({"case": f"graph_campaign_{manifest['seed']}_{index:03}_{action['label']}", "mode": mode,
                 "transport": transport, "evaluation": "protocol", "suite": "dense", "kind": "resilience",
                 "feature": "Dependency graph campaigns", "campaign_seed": manifest["seed"], "campaign_step": index,
                 "passed": bool(response_ok and state_ok and expected_uris == actual_uris and catalog_ok),
                 "graph_nodes": len(manifest["graph"]), "graph_edges": sum(map(len, manifest["graph"].values())),
                 "action": action, "responses": responses, "expected": expected_summary,
+                "client_root_mode": client.root_mode, **root_checks,
                 "state_matches_oracle": state_ok, "resource_notifications_match": expected_uris == actual_uris,
                 "catalog_notifications_match": catalog_ok, "notifications": delivered, "client_requests": client.events[trace_start:],
                 "receipt_count": len(actual_state["receipts"]), "audit": str(directory / "wire.jsonl"),

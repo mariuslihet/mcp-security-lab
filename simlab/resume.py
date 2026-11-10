@@ -52,7 +52,7 @@ def main():
     parser.add_argument("--checkpoint")
     parser.add_argument("--output", required=True)
     parser.add_argument("--mode", choices=["hardened", "vulnerable"])
-    parser.add_argument("--transport", choices=["stdio", "sse"])
+    parser.add_argument("--transport", choices=["stdio", "sse", "streamable-http"])
     parser.add_argument("--stop-after", type=int, help="Stop at this total completed-action boundary")
     args = parser.parse_args()
     if args.command == "start" and (not args.manifest or args.checkpoint):

@@ -54,7 +54,7 @@ async def interactive_matrix(directory: Path, mode: str, transport: str, *, para
         retry = await call("guided_update_record", args())
         record("client_guided_commit_and_retry", uncertain.isError and not retry.isError
                and retry.structuredContent["record"]["version"] == (2 if hardened else 3)
-               and len(client.calls) - start == (3 if hardened else 6)
+               and len(client.calls) - start == (4 if hardened else 6)
                and len(client.calls) - retry_start == (0 if hardened else 3)
                and after_commit["records"]["INC-002"]["version"] == 2,
                feature="Guided updates", callbacks=client.calls[start:], response=retry.model_dump(mode="json"))

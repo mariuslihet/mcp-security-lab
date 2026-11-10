@@ -17,6 +17,7 @@ class ControlledClient:
         self.root_mode, self.sampling_mode, self.approval = "workspace", "normal", "accept"
         self.calls = []
         self.events = []
+        self.before_approval = None
 
     def record(self, operation, request, response, started):
         self.calls.append(operation)
@@ -49,6 +50,8 @@ class ControlledClient:
 
     async def elicit(self, context, params):
         started = time.perf_counter()
+        if self.before_approval is not None and "request_digest" in params.requestedSchema["properties"]:
+            await self.before_approval(context, params)
         if self.approval in ("decline", "cancel"):
             response = types.ElicitResult(action=self.approval)
         else:

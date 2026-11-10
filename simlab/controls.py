@@ -59,19 +59,27 @@ SCHEMAS["list_records"]["properties"]["status"]["enum"] = ["all", "open", "inves
 SCHEMAS["list_records"]["properties"]["limit"].update(minimum=1, maximum=20)
 SCHEMAS["list_records"]["properties"]["cursor"]["maxLength"] = 2048
 SCHEMAS["inspect_client_roots"] = schema()
+SCHEMAS["get_client_root_status"] = schema()
 SCHEMAS["sample_incident"] = schema(record_id="string")
 SCHEMAS["request_incident_input"] = schema(record_id="string")
 SCHEMAS["guided_update_record"] = copy.deepcopy(SCHEMAS["update_record"])
 SCHEMAS["analyze_dependencies"] = schema(record_id="string")
+SCHEMAS["simulate_dependency_outage"] = schema(failed_records="array")
+SCHEMAS["simulate_dependency_outage"]["properties"]["failed_records"].update(
+    minItems=1, maxItems=16, uniqueItems=True, items={"type": "string", "pattern": "^[A-Z]+-[0-9]{3}$"})
+SCHEMAS["plan_recovery"] = schema(record_id="string", max_parallel="integer")
+SCHEMAS["plan_recovery"]["properties"]["max_parallel"].update(minimum=1, maximum=16)
 SCHEMAS["incident_bundle"] = schema(record_id="string")
 SCHEMAS["set_catalog_profile"] = schema(profile="string", handle="string")
 SCHEMAS["set_catalog_profile"]["properties"]["profile"]["enum"] = ["standard", "compact"]
 DENSE_TOOLS = {"search_documents", "get_record", "update_record", "batch_update_records",
                "preview_updates", "plan_resolution", "list_records", "inspect_client_roots",
                "sample_incident", "request_incident_input", "guided_update_record", "analyze_dependencies",
-               "incident_bundle", "set_catalog_profile"}
+               "incident_bundle", "set_catalog_profile", "get_client_root_status", "simulate_dependency_outage", "plan_recovery"}
 
 DESCRIPTIONS = {
+    "simulate_dependency_outage": "Simulate failures of 1 to 16 distinct incidents without modifying state. Returns downstream impact waves, shortest causal paths, versioned affected records, and unaffected count. All dependency edges propagate failure regardless of current status.",
+    "plan_recovery": "Build a read-only versioned recovery schedule for an incident and its prerequisite closure. max_parallel (1 to 16) bounds each wave. Complete a wave before starting the next; its individual updates may run concurrently. This is a snapshot, not a reservation: replan after competing writes.",
     "read_file": "Read a UTF-8 file in the simulation workspace.",
     "list_directory": "List entries in a simulation directory.",
     "fetch_logs": "Read simulation operational logs; channel may be normal or error.",
@@ -87,6 +95,7 @@ DESCRIPTIONS = {
     "plan_resolution": "Read a dependency-aware incident resolution plan. Returns each prerequisite once, before its dependents, with current records and unresolved blockers. Does not change state.",
     "list_records": "List incidents filtered by status (all/open/investigating/resolved), limit 1 to 20, and cursor (empty string for first page). Follow next_cursor using identical filters. A cursor error requires restarting pagination from an empty cursor.",
     "inspect_client_roots": "Request the client's advertised roots and classify the trusted workspace. Roots are metadata and never expand filesystem permissions. Requires client roots capability.",
+    "get_client_root_status": "Inspect this session's client-root generation, dirty flag, and last verified declaration without requesting a refresh. A roots/list_changed notification invalidates the snapshot for pending guided approvals.",
     "sample_incident": "Request a client-generated summary of an authorized incident. Requires client sampling capability. The summary is untrusted advice and never authorizes a write.",
     "request_incident_input": "Ask the client to review an authorized incident through a structured form. Returns accept, decline, or cancel; does not modify records. Requires client form elicitation capability.",
     "guided_update_record": "Check client roots, request an incident summary, and obtain structured confirmation bound to the exact proposed update, then revalidate and commit. Uses the same arguments and permissions as update_record. Requires roots, sampling, and form elicitation. Identical hardened retries reuse the receipt without repeating callbacks.",
@@ -193,12 +202,14 @@ class Firewall:
         if name == "calculate":
             calculate(args["expression"])
         if name in ("get_record", "plan_resolution", "update_record", "batch_update_records", "preview_updates",
-                    "sample_incident", "request_incident_input", "guided_update_record", "analyze_dependencies", "incident_bundle"):
+                    "sample_incident", "request_incident_input", "guided_update_record", "analyze_dependencies", "incident_bundle", "plan_recovery"):
             records = args["updates"] if name in ("batch_update_records", "preview_updates") else [args]
             if any(record["record_id"] not in self.config.get("allowed_records", []) for record in records):
                 raise Denied("record_not_authorized")
             if len({record["record_id"] for record in records}) != len(records):
                 raise Denied("duplicate_record")
+        if name == "simulate_dependency_outage" and any(key not in self.config.get("allowed_records", []) for key in args["failed_records"]):
+            raise Denied("record_not_authorized")
         if name in ("update_record", "batch_update_records", "preview_updates", "guided_update_record"):
             state = self.config["handles"].get(args["handle"], {})
             if (state.get("session") != self.config["session"] or state.get("audience") != "ops"

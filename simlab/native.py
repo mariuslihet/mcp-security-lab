@@ -178,6 +178,14 @@ async def native_matrix(directory: Path, mode: str, transport: str):
         tools = {tool.name for tool in (await session.list_tools()).tools}
         record("mcp_catalog_restoration", not restored.isError and prefix + "guided_update_record" in tools
                and not (await session.call_tool(prefix + "calculate", {"expression": "2+2"})).isError)
+        before = Path(config["state_path"]).read_bytes()
+        outage = await session.call_tool(prefix + "simulate_dependency_outage", {"failed_records": ["WF-001", "WF-003"]})
+        record("mcp_dependency_outage", not outage.isError and outage.structuredContent["impacted_records"] ==
+               [f"WF-{index:03}" for index in range(1, 7)], feature="Failure cascades", response=outage.model_dump(mode="json"))
+        recovery = await session.call_tool(prefix + "plan_recovery", {"record_id": "WF-006", "max_parallel": 2})
+        record("mcp_recovery_schedule", not recovery.isError and recovery.structuredContent["total_updates"] == 12
+               and all(len(wave) <= 2 for wave in recovery.structuredContent["waves"])
+               and Path(config["state_path"]).read_bytes() == before, feature="Recovery planning", response=recovery.model_dump(mode="json"))
 
     for row in rows:
         row.update(mode=mode, transport=transport, evaluation="protocol", suite="dense",

@@ -99,12 +99,13 @@ def expected_step(records, receipts, action, hardened):
 
 
 async def campaign_matrix(directory: Path, mode: str, transport: str, *, seed=7, steps=40, manifest_path: Path | None = None,
-                          graph_nodes=0, graph_width=4, parallel_calls=8):
+                          graph_nodes=0, graph_width=4, parallel_calls=8, race_topology="shared", root_churn=False, outage_stress=False):
     if manifest_path is not None:
         manifest = read_manifest(manifest_path)
     elif graph_nodes:
         from .graph_campaign import generate_graph_manifest
-        manifest = generate_graph_manifest(seed, steps, nodes=graph_nodes, width=graph_width, parallel_calls=parallel_calls)
+        manifest = generate_graph_manifest(seed, steps, nodes=graph_nodes, width=graph_width, parallel_calls=parallel_calls,
+                                           race_topology=race_topology, root_churn=root_churn, outage_stress=outage_stress)
     else:
         manifest = generate_manifest(seed, steps)
     if manifest["schema_version"] == 2:

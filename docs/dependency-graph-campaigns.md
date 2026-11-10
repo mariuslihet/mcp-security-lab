@@ -9,6 +9,8 @@ Graph campaigns extend the independent-record campaign format with bounded depen
 | `analyze_dependencies` | `record_id` | Returns the authorized prerequisite closure, node/edge counts, execution layers, one longest critical path, and unresolved records |
 | `incident_bundle` | `record_id` | Returns the record plus native MCP `resource_link` content blocks for its complete prerequisite closure |
 | `set_catalog_profile` | `profile`, `handle` | Selects `standard` or `compact`, requiring a `catalog:manage` handle in the hardened arm |
+| `simulate_dependency_outage` | `failed_records` | Simulates downstream impact from 1–16 failed incidents, including shortest causal paths and versioned snapshots |
+| `plan_recovery` | `record_id`, `max_parallel` | Schedules prerequisite-aware versioned recovery waves with 1–16 concurrent updates |
 
 Hardened names use the usual `sim_` prefix. Analysis and bundles are read-only. Their prerequisite traversals enforce the same missing-record, permission, and cycle checks as resolution plans. Resource links identify JSON resources; clients follow them through `resources/read` for the current record rather than treating the link itself as a snapshot.
 
@@ -61,9 +63,17 @@ The step count must fit the setup and complete resolution waves. If the requeste
 
 An independent reference model evaluates arguments, authority, receipt fingerprints, versions, transitions, and the proposed final dependency state. It models injected failures separately from commit success. The campaign compares the **entire record map and complete receipt contents** with the published state file after every action, including failed or uncertain calls.
 
-For a race, all requests share two records and differ in receipt key. Returned shared-record versions select a candidate legal serialization. Every response and the complete final state/receipt set must agree with that serialization. This accepts different valid race winners while rejecting multiple hardened winners, partial loser writes, missing commits, or inconsistent snapshots. It is a bounded reference oracle for these cases, not a general linearizability checker.
+The default race profile retains shared two-record batches. `--campaign-race-topology mixed` generates single-record, disjoint, partially overlapping, and hub batches, including requests carrying a weaker handle. Replay accepts heterogeneous write sets of 1–16 records per request; duplicate records within a request and duplicate receipt keys within a group are rejected.
+
+The race checker derives precedence from returned per-record versions and prerequisite relationships. Receipts witness commits with lost acknowledgments. Rejections and cached responses are placed at a point where the reference state permits them, including rejection of a child before a disjoint parent commits. Every response and the complete final state/receipt set must agree with the resulting order. This is a bounded checker for these atomic incident operations; it does not establish general linearizability for arbitrary MCP tools.
+
+`--campaign-root-churn` adds native root-change notifications, workspace withdrawal/restoration, and notified or silent changes during guided approval. The client declaration mode is modeled independently and checked after every action. These profiles are preserved in version-2 manifests and replayed without needing the original CLI flags.
+
+`--campaign-outage-stress` composes multi-node failure cascades with recovery scheduling before and after mutations. It varies concurrency budgets, probes protected records, and samples additional failure sets after resolution. See [outage and recovery semantics](outage-recovery.md) for scheduling and authority boundaries. These read-only previews also remain available in compact catalog mode.
 
 Campaigns subscribe to the first and terminal graph resources. Each mutation must produce exactly the expected subscribed URI notifications, including post-commit error responses. Hardened receipt replays and failed transactions must produce none. Catalog transitions are checked separately for exactly one notification per changed list. All notification evidence is retained in result rows and the wire journal.
+
+On Streamable HTTP, unsolicited notifications use a separate stream. The runner allows up to three seconds for expected deliveries before comparing exact counts; a tool response alone is not a notification barrier.
 
 The hardened arm must enforce prerequisites and produce the reference state. The vulnerable arm deliberately permits stale, unauthorized, duplicate, and invalid-transition mutations. Its passing rows mean those expected vulnerable effects were observed, not that the arm behaved safely.
 

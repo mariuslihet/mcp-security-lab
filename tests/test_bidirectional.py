@@ -55,7 +55,7 @@ def test_bidirectional_guided_update_and_receipt_retry(tmp_path, mode, transport
             calls.clear()
             result = await session.call_tool(prefix + "guided_update_record", arguments())
             assert result.isError and result.structuredContent is None  # Commit acknowledgment fault.
-            assert calls == ["roots", "sampling", "elicitation"]
+            assert calls == (["roots", "sampling", "elicitation", "roots"] if mode == "hardened" else ["roots", "sampling", "elicitation"])
             calls.clear()
             retry = await session.call_tool(prefix + "guided_update_record", arguments())
             assert not retry.isError
