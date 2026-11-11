@@ -173,6 +173,14 @@ def create_server(config: dict, hardened: bool) -> Server:
                 value = graph_operations.recovery_timeline(arguments)
             elif name == "rank_dependency_bottlenecks":
                 value = graph_operations.rank_bottlenecks(arguments)
+            elif name == "simulate_recovery_resilience":
+                value = graph_operations.recovery_resilience(arguments)
+            elif name == "validate_recovery_trace":
+                value = graph_operations.validate_trace(arguments)
+            elif name == "compare_recovery_strategies":
+                value = graph_operations.compare_strategies(arguments)
+            elif name == "evaluate_recovery_deadlines":
+                value = graph_operations.evaluate_deadlines(arguments)
             elif name == "incident_bundle":
                 plan = store.plan_resolution(arguments["record_id"], hardened)
                 value = {"record": store.read(arguments["record_id"]),

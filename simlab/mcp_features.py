@@ -27,12 +27,23 @@ READ_ONLY_TOOLS = {"read_file", "list_directory", "fetch_logs", "calculate", "se
 READ_ONLY_TOOLS |= {"analyze_dependencies", "incident_bundle", "get_client_root_status"}
 READ_ONLY_TOOLS |= {"simulate_dependency_outage", "plan_recovery"}
 READ_ONLY_TOOLS |= {"simulate_recovery_timeline", "rank_dependency_bottlenecks"}
+READ_ONLY_TOOLS |= {"simulate_recovery_resilience", "validate_recovery_trace"}
+READ_ONLY_TOOLS |= {"compare_recovery_strategies", "evaluate_recovery_deadlines"}
 RECORD_SCHEMA = {"type": "object", "required": ["id", "status", "version"], "properties": {
     "id": {"type": "string"}, "status": {"enum": ["open", "investigating", "resolved"]},
     "version": {"type": "integer", "minimum": 1}}}
 
 
 def output_schema(name):
+    if name in ("compare_recovery_strategies", "evaluate_recovery_deadlines"):
+        from .recovery_decisions import COMPARISON_SCHEMA, DEADLINE_RESULT_SCHEMA
+        return COMPARISON_SCHEMA if name == "compare_recovery_strategies" else DEADLINE_RESULT_SCHEMA
+    if name == "simulate_recovery_resilience":
+        from .resilience import TRACE_SCHEMA
+        return TRACE_SCHEMA
+    if name == "validate_recovery_trace":
+        return {"type": "object", "additionalProperties": False, "required": ["valid", "violations"],
+            "properties": {"valid": {"type": "boolean"}, "violations": {"type": "array", "items": {"type": "string"}}}}
     records = {"type": "array", "items": RECORD_SCHEMA}
     steps = {"type": "array", "items": {
         "type": "object", "required": ["record", "depends_on", "blocked_by"], "properties": {

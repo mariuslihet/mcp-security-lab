@@ -13,6 +13,10 @@ Graph campaigns extend the independent-record campaign format with bounded depen
 | `plan_recovery` | `record_id`, `max_parallel` | Schedules prerequisite-aware versioned recovery waves with 1–16 concurrent updates |
 | `simulate_recovery_timeline` | `record_id`, `max_parallel`, `durations` | Simulates worker-assigned recovery events with uneven durations and timing bounds |
 | `rank_dependency_bottlenecks` | `record_id`, `limit` | Ranks deduplicated downstream impact and unresolved work within the target closure |
+| `simulate_recovery_resilience` | Timeline fields, `max_attempts`, `retry_backoff_ms`, `faults`, `worker_outages` | Simulates retries, worker interruptions, exhaustion, and blocked recovery tasks |
+| `validate_recovery_trace` | `scenario`, `trace` | Independently audits attempt evidence and final-state claims against current snapshots |
+| `compare_recovery_strategies` | `scenario`, `deadline_ms`, `strategies` | Compares 2–8 worker/retry policies on one snapshot, excluding failed recoveries from winner selection |
+| `evaluate_recovery_deadlines` | `scenario`, `trace`, `deadlines` | Audits evidence before classifying requested incidents as met, late, or unfinished |
 
 Hardened names use the usual `sim_` prefix. Analysis and bundles are read-only. Their prerequisite traversals enforce the same missing-record, permission, and cycle checks as resolution plans. Resource links identify JSON resources; clients follow them through `resources/read` for the current record rather than treating the link itself as a snapshot.
 
@@ -74,6 +78,10 @@ The race checker derives precedence from returned per-record versions and prereq
 `--campaign-outage-stress` composes multi-node failure cascades with recovery scheduling before and after mutations. It varies concurrency budgets, probes protected records, and samples additional failure sets after resolution. See [outage and recovery semantics](outage-recovery.md) for scheduling and authority boundaries. These read-only previews also remain available in compact catalog mode.
 
 `--campaign-timeline-stress` adds weighted timelines, worker contention, simultaneous completion handling, and bottleneck rankings at initial, partial, and completed states. See [timed scheduling semantics](timed-recovery.md). All profiles can be enabled together and reconstructed from saved manifests.
+
+`--campaign-resilience-stress` adds paired simulation/audit actions with worker outages, attempt budgets, exponential backoff, and deliberate evidence corruption. Saved checkpoints re-audit both responses. See [resilience and trace-audit semantics](recovery-resilience.md).
+
+`--campaign-strategy-stress` adds policy comparisons, independently requested candidate traces, per-incident deadline evaluations, and corrupted-evidence rejection. Saved checkpoints verify all comparison witnesses and scoring responses. See [recovery decision semantics](recovery-decisions.md).
 
 Campaigns subscribe to the first and terminal graph resources. Each mutation must produce exactly the expected subscribed URI notifications, including post-commit error responses. Hardened receipt replays and failed transactions must produce none. Catalog transitions are checked separately for exactly one notification per changed list. All notification evidence is retained in result rows and the wire journal.
 

@@ -21,6 +21,52 @@ class GraphOperations:
             Firewall(self.config).check("sim_" + name, arguments)
         return json.loads(self.store.path.read_text(encoding="utf-8"))["records"]
 
+    def recovery_resilience(self, arguments):
+        from .resilience import simulate
+        records = self.resilience_inputs(arguments)
+        return simulate(arguments, self.config.get("dependencies", {}), records)
+
+    def compare_strategies(self, arguments):
+        from .recovery_decisions import compare
+        self.validate("compare_recovery_strategies", arguments)
+        records = self.resilience_inputs(arguments["scenario"])
+        labels = [row["label"] for row in arguments["strategies"]]
+        if len(set(labels)) != len(labels) or any(outage["worker"] >= row["max_parallel"]
+                for row in arguments["strategies"] for outage in arguments["scenario"]["worker_outages"]):
+            raise Denied("comparison_strategies_invalid")
+        return compare(arguments, self.config.get("dependencies", {}), records)
+
+    def evaluate_deadlines(self, arguments):
+        from .resilience import audit, closure
+        from .recovery_decisions import deadlines
+        self.validate("evaluate_recovery_deadlines", arguments)
+        records = self.resilience_inputs(arguments["scenario"])
+        selected = set(closure(arguments["scenario"]["record_id"], self.config.get("dependencies", {})))
+        targets = [row["record_id"] for row in arguments["deadlines"]]
+        if len(set(targets)) != len(targets) or not set(targets) <= selected:
+            raise Denied("deadline_targets_denied")
+        if not audit(arguments["scenario"], self.config.get("dependencies", {}), records, arguments["trace"])["valid"]:
+            raise Denied("recovery_trace_invalid")
+        return deadlines(arguments["trace"], arguments["deadlines"])
+
+    def validate_trace(self, arguments):
+        from .resilience import audit
+        self.validate("validate_recovery_trace", arguments)
+        records = self.resilience_inputs(arguments["scenario"])
+        return audit(arguments["scenario"], self.config.get("dependencies", {}), records, arguments["trace"])
+
+    def resilience_inputs(self, arguments):
+        records = self.validate("simulate_recovery_resilience", arguments)
+        selected = {step["record"]["id"] for step in self.store._resolution_steps(arguments["record_id"], records, self.hardened)}
+        durations = [row["record_id"] for row in arguments["durations"]]
+        faults = [(row["record_id"], row["status"]) for row in arguments["faults"]]
+        if (len(set(durations)) != len(durations) or not set(durations) <= selected or len(set(faults)) != len(faults)
+                or any(key not in selected for key, _ in faults)):
+            raise Denied("resilience_overrides_denied")
+        if any(row["worker"] >= arguments["max_parallel"] or row["start_ms"] >= row["end_ms"] for row in arguments["worker_outages"]):
+            raise Denied("worker_outage_invalid")
+        return records
+
     def failure_cascade(self, arguments):
         records = self.validate("simulate_dependency_outage", arguments)
         failed = sorted(arguments["failed_records"])

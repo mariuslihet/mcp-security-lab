@@ -162,6 +162,10 @@ The graph tools now also include **`simulate_dependency_outage`**, which traces 
 
 **`simulate_recovery_timeline`** adds uneven operation durations, worker contention, completion events, and timing lower bounds. **`rank_dependency_bottlenecks`** ranks shared dependencies by impact and unresolved work. Add `--campaign-timeline-stress` to combine both with the other chaos profiles. See [timed recovery and bottlenecks](docs/timed-recovery.md).
 
+**`simulate_recovery_resilience`** adds scheduled worker outages, retry budgets, exponential backoff, and blocked-work propagation. **`validate_recovery_trace`** independently audits proposed or corrupted traces against current snapshots. Add `--campaign-resilience-stress` for paired simulation/audit actions with deliberate evidence corruption. See [recovery resilience and trace auditing](docs/recovery-resilience.md).
+
+**`compare_recovery_strategies`** compares worker/retry policies against one frozen workload. **`evaluate_recovery_deadlines`** scores incident deadlines only after validating current trace evidence. Add `--campaign-strategy-stress` for comparisons checked against separately requested simulation witnesses. See [recovery decisions and deadlines](docs/recovery-decisions.md).
+
 For mixed disjoint/overlapping transactions, weaker-handle probes, workspace withdrawal, and notified or silent approval-time root drift across all three transports:
 
 ```powershell
@@ -224,6 +228,8 @@ Protocol checks run once for each server and transport combination. Every select
 | `--campaign-root-churn` | Off | Add workspace-root withdrawal, restoration, and approval-time drift to graph campaigns |
 | `--campaign-outage-stress` | Off | Add multi-node outage simulations and recovery plans at changing campaign snapshots |
 | `--campaign-timeline-stress` | Off | Add weighted recovery timelines, worker contention, and dependency bottleneck rankings |
+| `--campaign-resilience-stress` | Off | Add worker outages, retry exhaustion, and valid/tampered trace audits |
+| `--campaign-strategy-stress` | Off | Compare policies and score deadlines against independently audited simulation witnesses |
 | `--campaign-seed` | `7` | Reproducible campaign generator seed |
 | `--campaign-graph-nodes` | `0` | Use a dependency-graph campaign with 8–128 nodes; 0 keeps independent-record campaigns |
 | `--campaign-graph-width` | `4` | Generated graph layer width, 2–8; must be smaller than node count |

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from jsonschema import Draft202012Validator
+from .recovery_decisions import STRATEGY_SCHEMA, DEADLINES_SCHEMA
 
 
 class Denied(ValueError):
@@ -75,6 +76,27 @@ SCHEMAS["simulate_recovery_timeline"]["properties"]["durations"] = {"type": "arr
               "properties": {"record_id": {"type": "string"}, "investigate_ms": {"type": "integer", "minimum": 1, "maximum": 1000},
                              "resolve_ms": {"type": "integer", "minimum": 1, "maximum": 1000}}}}
 SCHEMAS["simulate_recovery_timeline"]["required"].append("durations")
+SCHEMAS["simulate_recovery_resilience"] = copy.deepcopy(SCHEMAS["simulate_recovery_timeline"])
+SCHEMAS["simulate_recovery_resilience"]["properties"].update(
+    max_attempts={"type": "integer", "minimum": 1, "maximum": 4},
+    retry_backoff_ms={"type": "integer", "minimum": 0, "maximum": 1000},
+    faults={"type": "array", "maxItems": 128, "items": {"type": "object", "additionalProperties": False,
+        "required": ["record_id", "status", "failed_attempts"], "properties": {"record_id": {"type": "string"},
+            "status": {"enum": ["investigating", "resolved"]}, "failed_attempts": {"type": "integer", "minimum": 0, "maximum": 3}}}},
+    worker_outages={"type": "array", "maxItems": 32, "items": {"type": "object", "additionalProperties": False,
+        "required": ["worker", "start_ms", "end_ms"], "properties": {"worker": {"type": "integer", "minimum": 0, "maximum": 15},
+            "start_ms": {"type": "integer", "minimum": 0, "maximum": 20000}, "end_ms": {"type": "integer", "minimum": 1, "maximum": 20000}}}})
+SCHEMAS["simulate_recovery_resilience"]["required"] += ["max_attempts", "retry_backoff_ms", "faults", "worker_outages"]
+SCHEMAS["validate_recovery_trace"] = {"type": "object", "additionalProperties": False, "required": ["scenario", "trace"],
+    "properties": {"scenario": copy.deepcopy(SCHEMAS["simulate_recovery_resilience"]), "trace": {"type": "object"}}}
+SCHEMAS["compare_recovery_strategies"] = {"type": "object", "additionalProperties": False,
+    "required": ["scenario", "deadline_ms", "strategies"], "properties": {
+        "scenario": copy.deepcopy(SCHEMAS["simulate_recovery_resilience"]),
+        "deadline_ms": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "strategies": {"type": "array", "minItems": 2, "maxItems": 8, "items": STRATEGY_SCHEMA}}}
+SCHEMAS["evaluate_recovery_deadlines"] = copy.deepcopy(SCHEMAS["validate_recovery_trace"])
+SCHEMAS["evaluate_recovery_deadlines"]["properties"]["deadlines"] = DEADLINES_SCHEMA
+SCHEMAS["evaluate_recovery_deadlines"]["required"].append("deadlines")
 SCHEMAS["rank_dependency_bottlenecks"] = schema(record_id="string", limit="integer")
 SCHEMAS["rank_dependency_bottlenecks"]["properties"]["limit"].update(minimum=1, maximum=20)
 SCHEMAS["incident_bundle"] = schema(record_id="string")
@@ -84,9 +106,14 @@ DENSE_TOOLS = {"search_documents", "get_record", "update_record", "batch_update_
                "preview_updates", "plan_resolution", "list_records", "inspect_client_roots",
                "sample_incident", "request_incident_input", "guided_update_record", "analyze_dependencies",
                "incident_bundle", "set_catalog_profile", "get_client_root_status", "simulate_dependency_outage", "plan_recovery",
-               "simulate_recovery_timeline", "rank_dependency_bottlenecks"}
+               "simulate_recovery_timeline", "rank_dependency_bottlenecks", "simulate_recovery_resilience", "validate_recovery_trace",
+               "compare_recovery_strategies", "evaluate_recovery_deadlines"}
 
 DESCRIPTIONS = {
+    "compare_recovery_strategies": "Compare 2 to 8 labeled worker/retry/backoff strategies on one frozen incident snapshot with identical durations, faults and outages. Returns completion, deadline, attempt and busy-time metrics; best_strategy is the fastest completed candidate, with attempts and label breaking ties. Does not modify records or guarantee a globally optimal policy.",
+    "evaluate_recovery_deadlines": "Audit the supplied scenario/trace against current snapshots, then score 1 to 128 distinct closure incidents against logical deadlines. Reports met, late, or unfinished with exhaustion/blocking causes. Invalid or stale evidence is rejected rather than scored. Read-only; deadlines are simulated milliseconds, not wall-clock schedules.",
+    "simulate_recovery_resilience": "Simulate recovery with scheduled worker outages, deterministic phase failures, 1 to 4 attempts per phase, and exponential retry backoff. Uses logical time only. Supply durations, worker_outages and faults arrays (empty for defaults). Returns attempts, exhaustion, blocked dependents, hypothetical final records, and snapshots. Does not modify incidents or authorize writes.",
+    "validate_recovery_trace": "Audit a proposed recovery trace against its scenario and the current authorized incident snapshots. Checks versions, workers, outages, retries, prerequisites and summary evidence without rerunning the simulator or changing state. Returns valid and violation codes; invalid traces are diagnostic results, while unauthorized scenarios are tool errors.",
     "simulate_recovery_timeline": "Simulate recovery with 1 to 16 workers and per-incident investigate_ms/resolve_ms durations (1 to 1000). Supply durations=[] for 1 ms defaults. Overrides must be distinct members of the target prerequisite closure. Returns worker events, makespan, total work, critical-path and worker lower bounds, and snapshots. Read-only and deterministic; stale versions require replanning.",
     "rank_dependency_bottlenecks": "Rank incidents within the target prerequisite closure by downstream impact, unresolved dependents, and ID. Returns up to 20 entries with direct fanout, deduplicated impacted count, downstream depth, and versioned closure snapshots. This structural ranking does not estimate outage probability.",
     "simulate_dependency_outage": "Simulate failures of 1 to 16 distinct incidents without modifying state. Returns downstream impact waves, shortest causal paths, versioned affected records, and unaffected count. All dependency edges propagate failure regardless of current status.",
@@ -214,7 +241,7 @@ class Firewall:
             calculate(args["expression"])
         if name in ("get_record", "plan_resolution", "update_record", "batch_update_records", "preview_updates",
                     "sample_incident", "request_incident_input", "guided_update_record", "analyze_dependencies", "incident_bundle", "plan_recovery",
-                    "simulate_recovery_timeline", "rank_dependency_bottlenecks"):
+                    "simulate_recovery_timeline", "rank_dependency_bottlenecks", "simulate_recovery_resilience"):
             records = args["updates"] if name in ("batch_update_records", "preview_updates") else [args]
             if any(record["record_id"] not in self.config.get("allowed_records", []) for record in records):
                 raise Denied("record_not_authorized")
@@ -222,6 +249,8 @@ class Firewall:
                 raise Denied("duplicate_record")
         if name == "simulate_dependency_outage" and any(key not in self.config.get("allowed_records", []) for key in args["failed_records"]):
             raise Denied("record_not_authorized")
+        if name in ("validate_recovery_trace", "compare_recovery_strategies", "evaluate_recovery_deadlines"):
+            self.check("sim_simulate_recovery_resilience", args["scenario"], consume=False)
         if name in ("update_record", "batch_update_records", "preview_updates", "guided_update_record"):
             state = self.config["handles"].get(args["handle"], {})
             if (state.get("session") != self.config["session"] or state.get("audience") != "ops"

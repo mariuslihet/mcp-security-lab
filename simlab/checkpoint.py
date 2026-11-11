@@ -125,7 +125,16 @@ def rebuild_oracle(oracle, manifest, payload):
     from .graph_campaign import matches
     for index, row in enumerate(payload["rows"]):
         action, responses = manifest["actions"][index], row.get("responses", [])
-        if action["kind"] in ("call", "guided_drift", "roots_change"):
+        if action["kind"] == "strategy":
+            from .graph_campaign import check_strategy_action
+            if not check_strategy_action(oracle, action, [types.CallToolResult.model_validate(item) for item in responses]):
+                raise ValueError("checkpoint recovery decisions fail reference witnesses")
+        elif action["kind"] == "resilience":
+            from .graph_campaign import check_resilience_pair
+            if len(responses) != 2 or not check_resilience_pair(oracle, action,
+                    types.CallToolResult.model_validate(responses[0]), types.CallToolResult.model_validate(responses[1])):
+                raise ValueError("checkpoint resilience trace fails reference audit")
+        elif action["kind"] in ("call", "guided_drift", "roots_change"):
             if len(responses) != 1:
                 raise ValueError("invalid checkpoint response count")
             if action["kind"] == "roots_change":

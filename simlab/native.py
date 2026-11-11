@@ -194,6 +194,27 @@ async def native_matrix(directory: Path, mode: str, transport: str):
         record("mcp_dependency_bottlenecks", not bottlenecks.isError and bottlenecks.structuredContent["node_count"] == 6
                and len(bottlenecks.structuredContent["ranking"]) == 3 and Path(config["state_path"]).read_bytes() == before,
                feature="Dependency bottlenecks", response=bottlenecks.model_dump(mode="json"))
+        resilience_args = {"record_id": "WF-006", "max_parallel": 2, "durations": [], "max_attempts": 3, "retry_backoff_ms": 2,
+            "faults": [{"record_id": "WF-001", "status": "investigating", "failed_attempts": 1}],
+            "worker_outages": [{"worker": 1, "start_ms": 0, "end_ms": 3}]}
+        resilient = await session.call_tool(prefix + "simulate_recovery_resilience", resilience_args)
+        record("mcp_recovery_retry_backoff", not resilient.isError and resilient.structuredContent["completed"]
+               and resilient.structuredContent["retry_count"] == 1 and Path(config["state_path"]).read_bytes() == before,
+               feature="Recovery resilience", response=resilient.model_dump(mode="json"))
+        audited = await session.call_tool(prefix + "validate_recovery_trace", {"scenario": resilience_args, "trace": resilient.structuredContent})
+        record("mcp_recovery_trace_audit", not audited.isError and audited.structuredContent == {"valid": True, "violations": []},
+               feature="Recovery trace auditing", response=audited.model_dump(mode="json"))
+        comparison = await session.call_tool(prefix + "compare_recovery_strategies", {"scenario": resilience_args, "deadline_ms": 1000,
+            "strategies": [{"label": "two", "max_parallel": 2, "max_attempts": 3, "retry_backoff_ms": 2},
+                           {"label": "three", "max_parallel": 3, "max_attempts": 3, "retry_backoff_ms": 2}]})
+        record("mcp_recovery_strategy_comparison", not comparison.isError and comparison.structuredContent["best_strategy"] in ("two", "three")
+               and all(row["completed"] for row in comparison.structuredContent["strategies"]),
+               feature="Recovery strategy comparison", response=comparison.model_dump(mode="json"))
+        evaluated = await session.call_tool(prefix + "evaluate_recovery_deadlines", {"scenario": resilience_args,
+            "trace": resilient.structuredContent, "deadlines": [{"record_id": "WF-006", "deadline_ms": 1000}]})
+        record("mcp_recovery_deadline_evaluation", not evaluated.isError and evaluated.structuredContent["all_met"]
+               and evaluated.structuredContent["met_count"] == 1 and Path(config["state_path"]).read_bytes() == before,
+               feature="Recovery deadlines", response=evaluated.model_dump(mode="json"))
 
     for row in rows:
         row.update(mode=mode, transport=transport, evaluation="protocol", suite="dense",
