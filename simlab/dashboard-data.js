@@ -89,6 +89,52 @@ function validateWorkspace(value,reportKey,rowCount){
   return {version:1,reportKey,notes,views,pins:[...value.pins],hiddenColumns:[...new Set(value.hiddenColumns)],state:cleanViewState(value.state)};
 }
 function csvCell(value){value=String(value);if(/^[=+@\-\t\r]/.test(value))value="'"+value;return '"'+value.replace(/"/g,'""')+'"';}
-const api={validateReport,stats,scope,compare,csvCell,parseQuery,matchesQuery,validateWorkspace};
+function collectRecoveryTraces(evidence){
+  const traces=[],seen=new WeakSet(),fingerprints=new Set(),stack=[{value:evidence,depth:0}];let visited=0,limited=false,invalid=0;
+  const integer=(value,min=0)=>Number.isSafeInteger(value)&&value>=min;
+  const text=value=>typeof value==='string'&&value.length>0&&value.length<=128;
+  while(stack.length){
+    if(++visited>100000){limited=true;break;}
+    const {value,depth}=stack.pop();if(!value||typeof value!=='object'||seen.has(value))continue;seen.add(value);
+    if(depth>24){limited=true;continue;}
+    const candidate=typeof value.record_id==='string'&&Object.hasOwn(value,'max_parallel')&&(Array.isArray(value.attempts)||Array.isArray(value.events));
+    if(candidate){
+      const resilience=Array.isArray(value.attempts),raw=resilience?value.attempts:value.events,horizon=resilience?value.elapsed_ms:value.makespan_ms;
+      let valid=text(value.record_id)&&integer(value.max_parallel,1)&&value.max_parallel<=16&&integer(horizon)&&raw.length<=(resilience?1024:256)
+        &&(!resilience||typeof value.completed==='boolean');
+      const events=[];
+      if(valid)for(let index=0;index<raw.length;index++){
+        const item=raw[index];if(!item||typeof item!=='object'){valid=false;break;}
+        const outcome=resilience?item.outcome:'succeeded',reason=resilience?item.reason:'none',attempt=resilience?item.attempt:1;
+        if(!text(item.record_id)||!['investigating','resolved'].includes(item.status)||!integer(item.expected_version,1)||!integer(item.worker)
+          ||item.worker>=value.max_parallel||!integer(item.start_ms)||!integer(item.end_ms)||item.end_ms<=item.start_ms||item.end_ms>horizon
+          ||!integer(attempt,1)||attempt>4||!['succeeded','retry','exhausted'].includes(outcome)||!['none','injected_failure','worker_outage'].includes(reason)){valid=false;break;}
+        events.push({index,record_id:item.record_id,status:item.status,expected_version:item.expected_version,worker:item.worker,
+          start_ms:item.start_ms,end_ms:item.end_ms,attempt,outcome,reason});
+      }
+      if(!valid){invalid++;continue;}
+      const trace={record_id:value.record_id,workers:value.max_parallel,horizon_ms:horizon,kind:resilience?'resilience':'timed',
+        completed:resilience?value.completed:null,events};
+      const fingerprint=JSON.stringify(trace);if(!fingerprints.has(fingerprint)){
+        if(traces.length===48){limited=true;break;}fingerprints.add(fingerprint);traces.push(trace);
+      }
+      continue;
+    }
+    let children=Object.values(value);if(children.length>100000){children=children.slice(0,100000);limited=true;}
+    for(let index=children.length-1;index>=0;index--)stack.push({value:children[index],depth:depth+1});
+  }
+  return {traces,limited,invalid};
+}
+function filterRecoveryEvents(trace,{incident='',outcome='all'}={}){
+  const query=String(incident).trim().toLowerCase().slice(0,128);
+  return (trace?.events??[]).filter(event=>event.record_id.toLowerCase().includes(query)&&(outcome==='all'||event.outcome===outcome))
+    .slice().sort((a,b)=>a.start_ms-b.start_ms||a.worker-b.worker||a.index-b.index);
+}
+function recoveryCsv(trace,events=trace.events){
+  const columns=['trace_record_id','trace_kind','worker','record_id','status','attempt','expected_version','start_ms','end_ms','outcome','reason'];
+  return [columns,...events.map(event=>[trace.record_id,trace.kind,event.worker,event.record_id,event.status,event.attempt,event.expected_version,
+    event.start_ms,event.end_ms,event.outcome,event.reason])].map(row=>row.map(csvCell).join(',')).join('\r\n');
+}
+const api={validateReport,stats,scope,compare,csvCell,parseQuery,matchesQuery,validateWorkspace,collectRecoveryTraces,filterRecoveryEvents,recoveryCsv};
 if(typeof module!=='undefined'&&module.exports)module.exports=api;else root.SimlabData=api;
 })(globalThis);

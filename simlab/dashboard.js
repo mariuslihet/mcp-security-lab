@@ -21,6 +21,7 @@ let inspectedRow=null;
 function inspect(row){inspectedRow=row;$('inspector').classList.remove('wide');$('inspector-nav').hidden=false;
   $('inspector-body').replaceChildren($('evidence-'+row.dataset.index).content.cloneNode(true));
   $('inspector-body').insertBefore(createReviewEditor(row),$('inspector-body').children[1]??null);
+  SimlabRecovery.mount($('inspector-body'));
   const index=matching.indexOf(row);$('inspect-previous').disabled=index<=0;$('inspect-next').disabled=index<0||index===matching.length-1;
   if(!$('inspector').open)$('inspector').showModal();$('inspector').scrollTop=0;}
 document.querySelectorAll('.inspect').forEach(button=>button.addEventListener('click',()=>inspect(button.closest('tr'))));
@@ -42,7 +43,7 @@ document.querySelectorAll('.pin-check').forEach(button=>button.addEventListener(
 $('clear-pins').addEventListener('click',()=>{pins.clear();refreshPins();});
 $('compare-pins').addEventListener('click',()=>{if(pins.size!==2)return;
   const columns=document.createElement('div');columns.className='pinned-comparison';
-  for(const id of pins){const article=document.createElement('article');article.append($('evidence-'+id).content.cloneNode(true));article.insertBefore(createReviewEditor(rows.find(row=>row.dataset.index===id)),article.children[1]??null);columns.append(article);}
+  for(const id of pins){const article=document.createElement('article');article.append($('evidence-'+id).content.cloneNode(true));article.insertBefore(createReviewEditor(rows.find(row=>row.dataset.index===id)),article.children[1]??null);SimlabRecovery.mount(article);columns.append(article);}
   $('inspector-body').replaceChildren(columns);$('inspector-nav').hidden=true;$('inspector').classList.add('wide');$('inspector').showModal();$('inspector').scrollTop=0;
 });
 

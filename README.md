@@ -166,6 +166,10 @@ The graph tools now also include **`simulate_dependency_outage`**, which traces 
 
 **`compare_recovery_strategies`** compares worker/retry policies against one frozen workload. **`evaluate_recovery_deadlines`** scores incident deadlines only after validating current trace evidence. Add `--campaign-strategy-stress` for comparisons checked against separately requested simulation witnesses. See [recovery decisions and deadlines](docs/recovery-decisions.md).
 
+**`search_recovery_mitigations`** searches bounded combinations of fault/outage removals. **`analyze_recovery_sensitivity`** tests duration changes against fixed disruption windows. Add `--campaign-analysis-stress` for joint repairs, incomplete-search probes, and independently audited variants. See [counterfactual recovery analysis](docs/counterfactual-recovery.md).
+
+**`analyze_recovery_utilization`** audits recovery evidence before reporting worker capacity, successful and failed attempt time, overlapping outages, idle time, and retry waits. Add `--campaign-utilization-stress` for independently checked accounting throughout graph campaigns. The report inspector also provides worker timelines, incident/outcome filters, attempt details, and filtered CSV downloads for recorded recovery traces. See [capacity analysis and the recovery viewer](docs/recovery-utilization.md).
+
 For mixed disjoint/overlapping transactions, weaker-handle probes, workspace withdrawal, and notified or silent approval-time root drift across all three transports:
 
 ```powershell
@@ -230,6 +234,8 @@ Protocol checks run once for each server and transport combination. Every select
 | `--campaign-timeline-stress` | Off | Add weighted recovery timelines, worker contention, and dependency bottleneck rankings |
 | `--campaign-resilience-stress` | Off | Add worker outages, retry exhaustion, and valid/tampered trace audits |
 | `--campaign-strategy-stress` | Off | Compare policies and score deadlines against independently audited simulation witnesses |
+| `--campaign-analysis-stress` | Off | Search joint mitigations and analyze duration sensitivity with independent witnesses |
+| `--campaign-utilization-stress` | Off | Audit worker capacity and retry waits with an independent interval sweep |
 | `--campaign-seed` | `7` | Reproducible campaign generator seed |
 | `--campaign-graph-nodes` | `0` | Use a dependency-graph campaign with 8–128 nodes; 0 keeps independent-record campaigns |
 | `--campaign-graph-width` | `4` | Generated graph layer width, 2–8; must be smaller than node count |
@@ -405,13 +411,14 @@ Run the Python suite:
 & .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Run the JavaScript comparison tests:
+Install the pinned development dependencies and run the JavaScript data and offline viewer interaction tests:
 
 ```powershell
-node --test tests\dashboard.test.cjs
+npm ci --ignore-scripts
+npm test
 ```
 
-The Python suite covers policies, filesystem boundaries, replay protection, all three transports, HTTP session isolation, live roots, mixed transaction races, checkpoint recovery, direct hardened-server access, and report generation. The JavaScript tests cover report validation, comparison denominators, missing grades, scope differences, and CSV escaping.
+The Python suite covers policies, filesystem boundaries, replay protection, all three transports, HTTP session isolation, live roots, mixed transaction races, checkpoint recovery, direct hardened-server access, and report generation. The JavaScript tests cover report validation, comparison denominators, missing grades, scope differences, CSV escaping, recovery filtering and pagination, keyboard focus retention, independent inspector panes, and safe rendering. The interaction tests use an offline in-memory DOM; they do not assess browser layout or visual accessibility. Node dependencies are used only for development; saved dashboards remain self-contained.
 
 The dense tests additionally check transaction rollback, overlapping batches, nested argument validation, persisted retry receipts across store restarts, state-file write failures, ordered document exposure, and read-only task grading. Workflow tests cover dependency cycles, final-state validation, previews, cursor integrity, pagination scope, and query recovery. Focus on those checks with:
 

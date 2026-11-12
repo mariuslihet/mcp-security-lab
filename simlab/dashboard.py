@@ -82,6 +82,36 @@ def graph_overview(rows):
             '<path d="M 0 0 L 10 5 L 0 10 z" fill="#61758b"/></marker></defs>' + "".join(paths + nodes) + '</svg></div></article>')
 
 
+def recovery_resources(row):
+    from jsonschema import Draft202012Validator
+    from .trace_diagnostics import UTILIZATION_OUTPUT
+    results = row.get("responses", [])
+    sources = [row.get("response"), *(results if isinstance(results, list) else [])]
+    for source in sources:
+        value = source.get("structuredContent") if isinstance(source, dict) else None
+        if not isinstance(value, dict) or "totals" not in value or "retry_wait" not in value:
+            continue
+        if not Draft202012Validator(UTILIZATION_OUTPUT).is_valid(value):
+            continue
+        totals = value["totals"]
+        ratio = lambda points: "Not applicable" if points is None else f"{points / 100:.2f}%"
+        cards = "".join(f'<div><dt>{safe(label)}</dt><dd>{safe(amount)}</dd></div>' for label, amount in (
+            ("Elapsed", f'{value["elapsed_ms"]} ms'), ("Worker capacity", f'{totals["capacity_ms"]} ms'),
+            ("Busy", f'{totals["busy_ms"]} ms'), ("Unavailable", f'{totals["outage_ms"]} ms'),
+            ("Idle", f'{totals["idle_ms"]} ms'), ("Available-capacity utilization", ratio(totals["utilization_basis_points"]))))
+        columns = ("worker", "productive_ms", "failed_attempt_ms", "outage_ms", "idle_ms")
+        rows = "".join('<tr>' + ''.join(f'<td>{safe(worker[key])}</td>' for key in columns)
+                       + f'<td>{safe(ratio(worker["utilization_basis_points"]))}</td></tr>' for worker in value["workers"])
+        return (f'<section class="recovery-resource-summary"><h3>Recorded worker capacity · {safe(value["record_id"])}</h3>'
+            f'<dl class="resource-metrics">{cards}</dl><p class="helper">Task-level retry waits: {value["retry_wait"]["required_backoff_ms"]} ms required backoff, '
+            f'{value["retry_wait"]["additional_wait_ms"]} ms additional wait. These may overlap across tasks and are separate from worker capacity.</p>'
+            '<details><summary>Per-worker accounting</summary><div class="scroll" tabindex="0" role="region" aria-label="Worker capacity accounting">'
+            '<table><caption>Recorded accounting · simulated milliseconds</caption><thead><tr>'
+            '<th scope="col">Worker</th><th scope="col">Successful</th><th scope="col">Failed attempts</th><th scope="col">Unavailable</th>'
+            f'<th scope="col">Idle</th><th scope="col">Utilization</th></tr></thead><tbody>{rows}</tbody></table></div></details></section>')
+    return ""
+
+
 def render_dashboard(report: dict, destination: Path) -> None:
     summary, rows = report["summary"], report["rows"]
     live = [row for row in rows if row.get("evaluation") == "llm"]
@@ -215,9 +245,9 @@ def render_dashboard(report: dict, destination: Path) -> None:
         templates.append(f'<template id="evidence-{index}"><h2>{safe(label)}</h2>{error}'
                          f'<div class="evidence-links">{evidence_links(row, destination.parent)}</div>'
                          f'<p class="answer">{safe(row.get("intent", "Fixed protocol probe; inspect the recorded arguments and response below."))}</p>'
-                         f'{rubric}{answer}{callback_trace}<h3>Tool-call sequence</h3><ol class="sequence">{"".join(steps)}</ol>'
+                         f'{recovery_resources(row)}{rubric}{answer}{callback_trace}<h3>Tool-call sequence</h3><ol class="sequence">{"".join(steps)}</ol>'
                          f'{"" if steps else "<p class=muted>No deputy tool-call sequence for this check.</p>"}'
-                         f'<details><summary>Full recorded evidence</summary><pre>{safe(json.dumps(row, indent=2, ensure_ascii=True))}</pre></details></template>')
+                         f'<details><summary>Full recorded evidence</summary><pre class="recorded-result">{safe(json.dumps(row, indent=2, ensure_ascii=True))}</pre></details></template>')
 
     def options(key):
         values = sorted({str(row.get(key, "")) for row in rows if key in row and row[key] != ""})
@@ -265,6 +295,7 @@ def render_dashboard(report: dict, destination: Path) -> None:
              "LEGACY_RUN_KEY": hashlib.sha256(encoded_data.encode()).hexdigest()[:20],
              "SCRIPT": Path(__file__).with_name("dashboard.js").read_text(encoding="utf-8"),
              "DATA_SCRIPT": Path(__file__).with_name("dashboard-data.js").read_text(encoding="utf-8"),
+             "RECOVERY_SCRIPT": Path(__file__).with_name("dashboard-recovery.js").read_text(encoding="utf-8"),
              "TEMPLATES": "".join(templates), "CHARTS": "".join(chart_rows) or '<p class="empty">No live case comparisons yet.</p>',
              "COMPARISONS": "".join(comparison_rows), "OUTCOMES": "".join(outcomes),
              "MATRIX": "".join(matrix) or '<tr><td colspan="5">No seed outcomes recorded.</td></tr>',

@@ -16,7 +16,7 @@ test = ["pytest==9.0.2"]
 include = ["simlab*", "vulnerable_mcp*", "hardened_mcp*"]
 
 [tool.setuptools.package-data]
-simlab = ["dashboard.html", "dashboard.js", "dashboard-data.js"]
+simlab = ["dashboard.html", "dashboard.js", "dashboard-data.js", "dashboard-recovery.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

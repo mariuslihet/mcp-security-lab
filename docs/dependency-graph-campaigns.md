@@ -17,6 +17,9 @@ Graph campaigns extend the independent-record campaign format with bounded depen
 | `validate_recovery_trace` | `scenario`, `trace` | Independently audits attempt evidence and final-state claims against current snapshots |
 | `compare_recovery_strategies` | `scenario`, `deadline_ms`, `strategies` | Compares 2–8 worker/retry policies on one snapshot, excluding failed recoveries from winner selection |
 | `evaluate_recovery_deadlines` | `scenario`, `trace`, `deadlines` | Audits evidence before classifying requested incidents as met, late, or unfinished |
+| `search_recovery_mitigations` | `scenario`, `deadline_ms`, `candidates`, `max_removals`, `max_evaluations` | Searches bounded single/pair removals of selected disruptions |
+| `analyze_recovery_sensitivity` | `scenario`, `deadline_ms`, `duration_percent` | Simulates discrete duration changes while keeping disruptions and backoff fixed |
+| `analyze_recovery_utilization` | `scenario`, `trace` | Audits evidence, then accounts for worker capacity, busy/idle/outage time, and retry waits |
 
 Hardened names use the usual `sim_` prefix. Analysis and bundles are read-only. Their prerequisite traversals enforce the same missing-record, permission, and cycle checks as resolution plans. Resource links identify JSON resources; clients follow them through `resources/read` for the current record rather than treating the link itself as a snapshot.
 
@@ -82,6 +85,10 @@ The race checker derives precedence from returned per-record versions and prereq
 `--campaign-resilience-stress` adds paired simulation/audit actions with worker outages, attempt budgets, exponential backoff, and deliberate evidence corruption. Saved checkpoints re-audit both responses. See [resilience and trace-audit semantics](recovery-resilience.md).
 
 `--campaign-strategy-stress` adds policy comparisons, independently requested candidate traces, per-incident deadline evaluations, and corrupted-evidence rejection. Saved checkpoints verify all comparison witnesses and scoring responses. See [recovery decision semantics](recovery-decisions.md).
+
+`--campaign-analysis-stress` adds bounded mitigation searches, truncated evaluation budgets, and duration sensitivity. Independently enumerated real simulation witnesses verify the reported results and checkpoint claims. See [counterfactual recovery semantics](counterfactual-recovery.md).
+
+`--campaign-utilization-stress` adds paired simulation/accounting actions before mutations, partway through recovery, after completion, and during seeded stress. Overlapping outages and repeated failures exercise capacity accounting; an independent interval sweep checks every response and checkpoint. See [recovery capacity and viewer semantics](recovery-utilization.md).
 
 Campaigns subscribe to the first and terminal graph resources. Each mutation must produce exactly the expected subscribed URI notifications, including post-commit error responses. Hardened receipt replays and failed transactions must produce none. Catalog transitions are checked separately for exactly one notification per changed list. All notification evidence is retained in result rows and the wire journal.
 

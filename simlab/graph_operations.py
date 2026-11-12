@@ -26,6 +26,15 @@ class GraphOperations:
         records = self.resilience_inputs(arguments)
         return simulate(arguments, self.config.get("dependencies", {}), records)
 
+    def recovery_utilization(self, arguments):
+        from .resilience import audit
+        from .trace_diagnostics import utilization
+        self.validate("analyze_recovery_utilization", arguments)
+        records = self.resilience_inputs(arguments["scenario"])
+        if not audit(arguments["scenario"], self.config.get("dependencies", {}), records, arguments["trace"])["valid"]:
+            raise Denied("recovery_trace_invalid")
+        return utilization(arguments["scenario"], arguments["trace"])
+
     def compare_strategies(self, arguments):
         from .recovery_decisions import compare
         self.validate("compare_recovery_strategies", arguments)
@@ -35,6 +44,25 @@ class GraphOperations:
                 for row in arguments["strategies"] for outage in arguments["scenario"]["worker_outages"]):
             raise Denied("comparison_strategies_invalid")
         return compare(arguments, self.config.get("dependencies", {}), records)
+
+    def search_mitigations(self, arguments):
+        from .counterfactuals import mitigation_search
+        self.validate("search_recovery_mitigations", arguments)
+        records = self.resilience_inputs(arguments["scenario"])
+        if any(row["index"] >= len(arguments["scenario"]["faults" if row["kind"] == "fault" else "worker_outages"])
+               for row in arguments["candidates"]):
+            raise Denied("mitigation_candidate_invalid")
+        return mitigation_search(arguments, self.config.get("dependencies", {}), records)
+
+    def recovery_sensitivity(self, arguments):
+        from .counterfactuals import duration_sensitivity
+        self.validate("analyze_recovery_sensitivity", arguments)
+        records = self.resilience_inputs(arguments["scenario"])
+        largest = max(arguments["duration_percent"])
+        if any((row[phase] * largest + 99) // 100 > 1000 for row in arguments["scenario"]["durations"]
+               for phase in ("investigate_ms", "resolve_ms")):
+            raise Denied("scaled_duration_out_of_bounds")
+        return duration_sensitivity(arguments, self.config.get("dependencies", {}), records)
 
     def evaluate_deadlines(self, arguments):
         from .resilience import audit, closure

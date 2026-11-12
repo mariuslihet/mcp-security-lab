@@ -1,0 +1,10 @@
+{
+  "name": "mcp-simulation-lab-dashboard-tests",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/dashboard*.test.cjs"
+  },
+  "devDependencies": {
+    "jsdom": "26.1.0"
+  }
+}

@@ -2,6 +2,39 @@ from simlab.evaluation import summarize
 from simlab.reporting import write_html_report, write_reports
 
 
+def test_resource_diagnostics_and_timeline_assets_are_portable_and_escaped(tmp_path):
+    from simlab.resilience import simulate
+    from simlab.trace_diagnostics import utilization
+    from test_outage_recovery import DIAMOND, operations
+    from test_resilience import scenario
+    import json
+    _, config, _, _ = operations(tmp_path / "fixture")
+    records = json.loads(open(config["state_path"], encoding="utf-8").read())['records']
+    args = scenario()
+    trace = simulate(args, DIAMOND, records)
+    value = utilization(args, trace)
+    value['record_id'] = '<img src=x onerror=alert(1)>'
+    rows = [{'case':'resource-diagnostics','evaluation':'protocol','passed':True,
+             'response':{'structuredContent':value},'recovery_trace':trace}]
+    report = {'schema_version':2,'model':{'model':'controlled'},'rows':rows,'summary':summarize(rows),'methodology':[]}
+    write_html_report(report, tmp_path / 'report.html')
+    html = (tmp_path / 'report.html').read_text(encoding='utf-8')
+    assert 'Recorded worker capacity' in html and '80.00%' in html
+    assert 'recovery-resource-summary' in html and 'class="recorded-result"' in html
+    assert 'globalThis.SimlabRecovery' in html and 'SimlabRecovery.mount' in html
+    assert '<img src=x onerror=alert(1)>' not in html and '&lt;img src=x' in html
+    assert '__RECOVERY_SCRIPT__' not in html and 'src="dashboard-recovery.js"' not in html
+
+
+def test_malformed_resource_diagnostics_keep_raw_evidence_without_misleading_table(tmp_path):
+    rows = [{'case':'malformed-resources','evaluation':'protocol','passed':False,
+             'response':{'structuredContent':{'record_id':'GR-000','totals':{},'retry_wait':{}}}}]
+    report = {'schema_version':2,'model':{'model':'controlled'},'rows':rows,'summary':summarize(rows),'methodology':[]}
+    write_html_report(report,tmp_path/'report.html')
+    html = (tmp_path/'report.html').read_text(encoding='utf-8')
+    assert 'Recorded worker capacity ·' not in html and 'Full recorded evidence' in html
+
+
 def test_report_escapes_payloads_and_links_only_run_evidence(tmp_path):
     payload = '<script>alert("payload")</script>__METHOD__'
     rows = [{"case": payload, "evaluation": "llm", "mode": "vulnerable", "passed": False,

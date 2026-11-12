@@ -29,12 +29,20 @@ READ_ONLY_TOOLS |= {"simulate_dependency_outage", "plan_recovery"}
 READ_ONLY_TOOLS |= {"simulate_recovery_timeline", "rank_dependency_bottlenecks"}
 READ_ONLY_TOOLS |= {"simulate_recovery_resilience", "validate_recovery_trace"}
 READ_ONLY_TOOLS |= {"compare_recovery_strategies", "evaluate_recovery_deadlines"}
+READ_ONLY_TOOLS |= {"search_recovery_mitigations", "analyze_recovery_sensitivity"}
+READ_ONLY_TOOLS |= {"analyze_recovery_utilization"}
 RECORD_SCHEMA = {"type": "object", "required": ["id", "status", "version"], "properties": {
     "id": {"type": "string"}, "status": {"enum": ["open", "investigating", "resolved"]},
     "version": {"type": "integer", "minimum": 1}}}
 
 
 def output_schema(name):
+    if name == "analyze_recovery_utilization":
+        from .trace_diagnostics import UTILIZATION_OUTPUT
+        return UTILIZATION_OUTPUT
+    if name in ("search_recovery_mitigations", "analyze_recovery_sensitivity"):
+        from .counterfactuals import SEARCH_OUTPUT, SENSITIVITY_OUTPUT
+        return SEARCH_OUTPUT if name == "search_recovery_mitigations" else SENSITIVITY_OUTPUT
     if name in ("compare_recovery_strategies", "evaluate_recovery_deadlines"):
         from .recovery_decisions import COMPARISON_SCHEMA, DEADLINE_RESULT_SCHEMA
         return COMPARISON_SCHEMA if name == "compare_recovery_strategies" else DEADLINE_RESULT_SCHEMA

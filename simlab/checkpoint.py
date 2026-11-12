@@ -125,7 +125,16 @@ def rebuild_oracle(oracle, manifest, payload):
     from .graph_campaign import matches
     for index, row in enumerate(payload["rows"]):
         action, responses = manifest["actions"][index], row.get("responses", [])
-        if action["kind"] == "strategy":
+        if action["kind"] == "utilization":
+            from .graph_campaign import check_utilization_action
+            if len(responses) != 2 or not check_utilization_action(oracle, action,
+                    types.CallToolResult.model_validate(responses[0]), types.CallToolResult.model_validate(responses[1])):
+                raise ValueError("checkpoint utilization fails interval sweep")
+        elif action["kind"] == "counterfactual":
+            from .graph_campaign import check_counterfactual_action
+            if not check_counterfactual_action(oracle, action, [types.CallToolResult.model_validate(item) for item in responses]):
+                raise ValueError("checkpoint counterfactuals fail reference witnesses")
+        elif action["kind"] == "strategy":
             from .graph_campaign import check_strategy_action
             if not check_strategy_action(oracle, action, [types.CallToolResult.model_validate(item) for item in responses]):
                 raise ValueError("checkpoint recovery decisions fail reference witnesses")

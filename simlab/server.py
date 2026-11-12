@@ -181,6 +181,12 @@ def create_server(config: dict, hardened: bool) -> Server:
                 value = graph_operations.compare_strategies(arguments)
             elif name == "evaluate_recovery_deadlines":
                 value = graph_operations.evaluate_deadlines(arguments)
+            elif name == "search_recovery_mitigations":
+                value = graph_operations.search_mitigations(arguments)
+            elif name == "analyze_recovery_sensitivity":
+                value = graph_operations.recovery_sensitivity(arguments)
+            elif name == "analyze_recovery_utilization":
+                value = graph_operations.recovery_utilization(arguments)
             elif name == "incident_bundle":
                 plan = store.plan_resolution(arguments["record_id"], hardened)
                 value = {"record": store.read(arguments["record_id"]),

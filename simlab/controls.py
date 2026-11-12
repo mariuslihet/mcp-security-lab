@@ -12,6 +12,7 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 from .recovery_decisions import STRATEGY_SCHEMA, DEADLINES_SCHEMA
+from .counterfactuals import CANDIDATES, PERCENTAGES
 
 
 class Denied(ValueError):
@@ -89,6 +90,7 @@ SCHEMAS["simulate_recovery_resilience"]["properties"].update(
 SCHEMAS["simulate_recovery_resilience"]["required"] += ["max_attempts", "retry_backoff_ms", "faults", "worker_outages"]
 SCHEMAS["validate_recovery_trace"] = {"type": "object", "additionalProperties": False, "required": ["scenario", "trace"],
     "properties": {"scenario": copy.deepcopy(SCHEMAS["simulate_recovery_resilience"]), "trace": {"type": "object"}}}
+SCHEMAS["analyze_recovery_utilization"] = copy.deepcopy(SCHEMAS["validate_recovery_trace"])
 SCHEMAS["compare_recovery_strategies"] = {"type": "object", "additionalProperties": False,
     "required": ["scenario", "deadline_ms", "strategies"], "properties": {
         "scenario": copy.deepcopy(SCHEMAS["simulate_recovery_resilience"]),
@@ -97,6 +99,15 @@ SCHEMAS["compare_recovery_strategies"] = {"type": "object", "additionalPropertie
 SCHEMAS["evaluate_recovery_deadlines"] = copy.deepcopy(SCHEMAS["validate_recovery_trace"])
 SCHEMAS["evaluate_recovery_deadlines"]["properties"]["deadlines"] = DEADLINES_SCHEMA
 SCHEMAS["evaluate_recovery_deadlines"]["required"].append("deadlines")
+SCHEMAS["search_recovery_mitigations"] = {"type": "object", "additionalProperties": False,
+    "required": ["scenario", "deadline_ms", "candidates", "max_removals", "max_evaluations"], "properties": {
+        "scenario": copy.deepcopy(SCHEMAS["simulate_recovery_resilience"]), "deadline_ms": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "candidates": CANDIDATES, "max_removals": {"type": "integer", "minimum": 1, "maximum": 2},
+        "max_evaluations": {"type": "integer", "minimum": 1, "maximum": 40}}}
+SCHEMAS["analyze_recovery_sensitivity"] = {"type": "object", "additionalProperties": False,
+    "required": ["scenario", "deadline_ms", "duration_percent"], "properties": {
+        "scenario": copy.deepcopy(SCHEMAS["simulate_recovery_resilience"]), "deadline_ms": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "duration_percent": PERCENTAGES}}
 SCHEMAS["rank_dependency_bottlenecks"] = schema(record_id="string", limit="integer")
 SCHEMAS["rank_dependency_bottlenecks"]["properties"]["limit"].update(minimum=1, maximum=20)
 SCHEMAS["incident_bundle"] = schema(record_id="string")
@@ -107,9 +118,13 @@ DENSE_TOOLS = {"search_documents", "get_record", "update_record", "batch_update_
                "sample_incident", "request_incident_input", "guided_update_record", "analyze_dependencies",
                "incident_bundle", "set_catalog_profile", "get_client_root_status", "simulate_dependency_outage", "plan_recovery",
                "simulate_recovery_timeline", "rank_dependency_bottlenecks", "simulate_recovery_resilience", "validate_recovery_trace",
-               "compare_recovery_strategies", "evaluate_recovery_deadlines"}
+               "compare_recovery_strategies", "evaluate_recovery_deadlines", "search_recovery_mitigations", "analyze_recovery_sensitivity",
+               "analyze_recovery_utilization"}
 
 DESCRIPTIONS = {
+    "analyze_recovery_utilization": "Audit a scenario and trace against current snapshots, then explain worker capacity, productive/failed attempt time, unioned outages, idle time, and retry waiting. Utilization is integer basis points of available capacity, null when no capacity exists. Task-level retry waits are separate from worker capacity. Read-only; invalid or stale traces are rejected.",
+    "search_recovery_mitigations": "Search removal of up to two selected fault/outage entries using at most 40 evaluations on one frozen snapshot. Supply 1 to 8 candidate references (kind fault/outage, original array index). Returns baseline and trials, deadline outcomes, best_trial, and search_complete. Prefers fewer removals, then elapsed time, attempts and reference order. Read-only; does not change real fault settings.",
+    "analyze_recovery_sensitivity": "Simulate 2 to 8 distinct duration percentages (25 to 400) on one frozen scenario. Durations round upward to integer milliseconds and must remain at most 1000 ms. Faults, outages and backoff remain fixed. Returns sample outcomes and robust_across_samples, not a statistical probability. Does not modify incidents.",
     "compare_recovery_strategies": "Compare 2 to 8 labeled worker/retry/backoff strategies on one frozen incident snapshot with identical durations, faults and outages. Returns completion, deadline, attempt and busy-time metrics; best_strategy is the fastest completed candidate, with attempts and label breaking ties. Does not modify records or guarantee a globally optimal policy.",
     "evaluate_recovery_deadlines": "Audit the supplied scenario/trace against current snapshots, then score 1 to 128 distinct closure incidents against logical deadlines. Reports met, late, or unfinished with exhaustion/blocking causes. Invalid or stale evidence is rejected rather than scored. Read-only; deadlines are simulated milliseconds, not wall-clock schedules.",
     "simulate_recovery_resilience": "Simulate recovery with scheduled worker outages, deterministic phase failures, 1 to 4 attempts per phase, and exponential retry backoff. Uses logical time only. Supply durations, worker_outages and faults arrays (empty for defaults). Returns attempts, exhaustion, blocked dependents, hypothetical final records, and snapshots. Does not modify incidents or authorize writes.",
@@ -249,7 +264,7 @@ class Firewall:
                 raise Denied("duplicate_record")
         if name == "simulate_dependency_outage" and any(key not in self.config.get("allowed_records", []) for key in args["failed_records"]):
             raise Denied("record_not_authorized")
-        if name in ("validate_recovery_trace", "compare_recovery_strategies", "evaluate_recovery_deadlines"):
+        if name in ("validate_recovery_trace", "compare_recovery_strategies", "evaluate_recovery_deadlines", "search_recovery_mitigations", "analyze_recovery_sensitivity", "analyze_recovery_utilization"):
             self.check("sim_simulate_recovery_resilience", args["scenario"], consume=False)
         if name in ("update_record", "batch_update_records", "preview_updates", "guided_update_record"):
             state = self.config["handles"].get(args["handle"], {})

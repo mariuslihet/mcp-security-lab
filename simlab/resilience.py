@@ -36,7 +36,17 @@ def closure(target, graph):
     return sorted(selected)
 
 
+def integer_arguments(value):
+    """Copy validated JSON arguments, preserving whole-number semantics."""
+    if isinstance(value, dict):
+        return {key: integer_arguments(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [integer_arguments(item) for item in value]
+    return int(value) if isinstance(value, float) and value.is_integer() else value
+
+
 def simulate(args, graph, records):
+    args = integer_arguments(args)
     selected = closure(args["record_id"], graph)
     initial = [copy.deepcopy(records[key]) for key in selected]
     proposed = {record["id"]: copy.deepcopy(record) for record in initial}

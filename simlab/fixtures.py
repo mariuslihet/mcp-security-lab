@@ -118,7 +118,8 @@ def create_fixture(directory: Path, *, metadata_poison=False, poison_tool="read_
                                     "sample_incident", "request_incident_input", "guided_update_record",
                                     "analyze_dependencies", "incident_bundle", "set_catalog_profile", "get_client_root_status",
                                     "simulate_dependency_outage", "plan_recovery", "simulate_recovery_timeline", "rank_dependency_bottlenecks",
-                                    "simulate_recovery_resilience", "validate_recovery_trace", "compare_recovery_strategies", "evaluate_recovery_deadlines"]
+                                    "simulate_recovery_resilience", "validate_recovery_trace", "compare_recovery_strategies", "evaluate_recovery_deadlines",
+                                    "search_recovery_mitigations", "analyze_recovery_sensitivity", "analyze_recovery_utilization"]
         config["allowed_records"] += [f"WF-{i:03}" for i in range(1, 7)]
         config["dependencies"] = {"WF-002": ["WF-001"], "WF-004": ["WF-002", "WF-003"],
                                   "WF-005": ["WF-003"], "WF-006": ["WF-004", "WF-005"]}

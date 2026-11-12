@@ -1,8 +1,51 @@
 const test=require('node:test');
 const assert=require('node:assert/strict');
 const {validateReport,compare,csvCell,parseQuery,matchesQuery,validateWorkspace}=require('../simlab/dashboard-data.js');
+const {collectRecoveryTraces,filterRecoveryEvents,recoveryCsv}=require('../simlab/dashboard-data.js');
 const report=rows=>({schema_version:2,model:{model:'local'},rows});
 const row=(mode,seed,effect)=>({case:'output_poison',evaluation:'llm',transport:'stdio',mode,seed,passed:true,exploit_observed:effect});
+
+const recoveryTrace=()=>({record_id:'GR-003',max_parallel:2,elapsed_ms:4,completed:true,attempts:[
+  {record_id:'GR-000',status:'investigating',expected_version:1,attempt:1,worker:0,start_ms:0,end_ms:1,outcome:'retry',reason:'injected_failure'},
+  {record_id:'GR-000',status:'investigating',expected_version:1,attempt:2,worker:1,start_ms:3,end_ms:4,outcome:'succeeded',reason:'none'}]});
+
+test('recovery traces are discovered, normalized, deduplicated and leave evidence unchanged',()=>{
+  const raw=recoveryTrace(),evidence={responses:[{structuredContent:raw},{structuredContent:JSON.parse(JSON.stringify(raw))}]};
+  const original=JSON.stringify(evidence),result=collectRecoveryTraces(evidence);
+  assert.equal(result.traces.length,1);assert.equal(result.invalid,0);assert.equal(result.limited,false);
+  assert.equal(result.traces[0].events[1].attempt,2);assert.equal(JSON.stringify(evidence),original);
+});
+test('recovery extraction does not parse embedded text and rejects malformed coordinates',()=>{
+  const malformed=[NaN,Infinity,-1,3.5];
+  for(const coordinate of malformed){const trace=recoveryTrace();trace.attempts[0].start_ms=coordinate;
+    assert.equal(collectRecoveryTraces({trace}).traces.length,0);}
+  const trace=recoveryTrace();trace.attempts[0].worker=2;
+  assert.equal(collectRecoveryTraces({trace}).invalid,1);
+  assert.equal(collectRecoveryTraces({text:JSON.stringify(recoveryTrace())}).traces.length,0);
+});
+test('empty recoveries and timed schedules have distinct normalized trace kinds',()=>{
+  const empty={...recoveryTrace(),attempts:[],elapsed_ms:0};
+  const timed={record_id:'GR-003',max_parallel:1,makespan_ms:1,events:[{record_id:'GR-000',status:'resolved',expected_version:2,worker:0,start_ms:0,end_ms:1}]};
+  const found=collectRecoveryTraces([empty,timed]).traces;
+  assert.equal(found.length,2);assert.equal(found[0].horizon_ms,0);assert.equal(found[1].events[0].outcome,'succeeded');
+  assert.equal(found[1].kind,'timed');
+});
+test('recovery extraction bounds cycles, depth and trace counts',()=>{
+  const cycle={};cycle.self=cycle;cycle.trace=recoveryTrace();assert.equal(collectRecoveryTraces(cycle).traces.length,1);
+  const many=Array.from({length:60},(_,index)=>({...recoveryTrace(),record_id:'GR-'+index}));
+  const limited=collectRecoveryTraces(many);assert.equal(limited.traces.length,48);assert.equal(limited.limited,true);
+});
+test('recovery filters retain chronological events and support incident and outcome selection',()=>{
+  const trace=collectRecoveryTraces(recoveryTrace()).traces[0];
+  assert.equal(filterRecoveryEvents(trace,{incident:'gr-000',outcome:'retry'}).length,1);
+  assert.equal(filterRecoveryEvents(trace,{incident:'other'}).length,0);
+  assert.equal(filterRecoveryEvents(trace,{outcome:'exhausted'}).length,0);
+});
+test('recovery CSV exports filtered logical timings and neutralizes formula-like identifiers',()=>{
+  const trace=collectRecoveryTraces(recoveryTrace()).traces[0];trace.events[0].record_id='=SUM(1,2)';
+  const csv=recoveryCsv(trace,[trace.events[0]]);
+  assert.ok(csv.includes("'"+'=SUM(1,2)'));assert.ok(csv.includes('start_ms'));assert.equal(csv.split('\r\n').length,2);
+});
 
 test('comparison preserves denominators and separates errors from evaluated attempts',()=>{
   const current=report([row('vulnerable',7,true),row('hardened',7,false),{case:'output_poison',evaluation:'llm',transport:'stdio',mode:'hardened',seed:11,passed:false,error:'timeout'}]);

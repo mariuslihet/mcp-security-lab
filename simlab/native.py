@@ -215,6 +215,19 @@ async def native_matrix(directory: Path, mode: str, transport: str):
         record("mcp_recovery_deadline_evaluation", not evaluated.isError and evaluated.structuredContent["all_met"]
                and evaluated.structuredContent["met_count"] == 1 and Path(config["state_path"]).read_bytes() == before,
                feature="Recovery deadlines", response=evaluated.model_dump(mode="json"))
+        searched = await session.call_tool(prefix + "search_recovery_mitigations", {"scenario": resilience_args, "deadline_ms": 1000,
+            "candidates": [{"kind": "fault", "index": 0}], "max_removals": 1, "max_evaluations": 2})
+        record("mcp_recovery_mitigation_search", not searched.isError and searched.structuredContent["best_trial"] == 0
+               and searched.structuredContent["search_complete"], feature="Mitigation search", response=searched.model_dump(mode="json"))
+        sensitivity = await session.call_tool(prefix + "analyze_recovery_sensitivity", {"scenario": resilience_args,
+            "deadline_ms": 1000, "duration_percent": [100, 150]})
+        record("mcp_recovery_duration_sensitivity", not sensitivity.isError and sensitivity.structuredContent["robust_across_samples"]
+               and len(sensitivity.structuredContent["samples"]) == 2 and Path(config["state_path"]).read_bytes() == before,
+               feature="Recovery sensitivity", response=sensitivity.model_dump(mode="json"))
+        utilized = await session.call_tool(prefix + "analyze_recovery_utilization", {"scenario": resilience_args, "trace": resilient.structuredContent})
+        record("mcp_recovery_utilization", not utilized.isError and utilized.structuredContent["totals"]["productive_ms"] == 12
+               and utilized.structuredContent["totals"]["busy_ms"] == 13 and Path(config["state_path"]).read_bytes() == before,
+               feature="Recovery utilization", response=utilized.model_dump(mode="json"), recovery_trace=resilient.structuredContent)
 
     for row in rows:
         row.update(mode=mode, transport=transport, evaluation="protocol", suite="dense",
