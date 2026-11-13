@@ -31,12 +31,24 @@ READ_ONLY_TOOLS |= {"simulate_recovery_resilience", "validate_recovery_trace"}
 READ_ONLY_TOOLS |= {"compare_recovery_strategies", "evaluate_recovery_deadlines"}
 READ_ONLY_TOOLS |= {"search_recovery_mitigations", "analyze_recovery_sensitivity"}
 READ_ONLY_TOOLS |= {"analyze_recovery_utilization"}
+READ_ONLY_TOOLS |= {"evaluate_recovery_portfolio", "compare_recovery_traces"}
+READ_ONLY_TOOLS |= {"analyze_recovery_waits", "explain_recovery_failures"}
+READ_ONLY_TOOLS |= {"evaluate_recovery_objectives", "search_recovery_capacity"}
 RECORD_SCHEMA = {"type": "object", "required": ["id", "status", "version"], "properties": {
     "id": {"type": "string"}, "status": {"enum": ["open", "investigating", "resolved"]},
     "version": {"type": "integer", "minimum": 1}}}
 
 
 def output_schema(name):
+    if name in ("evaluate_recovery_objectives", "search_recovery_capacity"):
+        from .recovery_objectives import OBJECTIVES_OUTPUT, CAPACITY_OUTPUT
+        return OBJECTIVES_OUTPUT if name == "evaluate_recovery_objectives" else CAPACITY_OUTPUT
+    if name in ("analyze_recovery_waits", "explain_recovery_failures"):
+        from .recovery_explanations import WAITS_OUTPUT, FAILURES_OUTPUT
+        return WAITS_OUTPUT if name == "analyze_recovery_waits" else FAILURES_OUTPUT
+    if name in ("evaluate_recovery_portfolio", "compare_recovery_traces"):
+        from .recovery_portfolio import PORTFOLIO_OUTPUT, TRACE_COMPARISON_OUTPUT
+        return PORTFOLIO_OUTPUT if name == "evaluate_recovery_portfolio" else TRACE_COMPARISON_OUTPUT
     if name == "analyze_recovery_utilization":
         from .trace_diagnostics import UTILIZATION_OUTPUT
         return UTILIZATION_OUTPUT

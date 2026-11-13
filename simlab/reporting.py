@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import copy
 import io
 import json
 from pathlib import Path
@@ -12,6 +13,24 @@ from .performance import collect_protocol_metrics
 
 def write_html_report(report: dict, destination: Path) -> None:
     render_dashboard(report, destination)
+
+
+def comparison_snapshot(report: dict) -> dict:
+    """Keep exactly the scope and row metrics used by dashboard comparisons."""
+    result = {key: copy.deepcopy(report[key]) for key in (
+        "schema_version", "model", "experiment", "status", "started_at", "updated_at", "summary") if key in report}
+    result.setdefault("schema_version", 2)
+    result["export_kind"] = "comparison"
+    result["rows"] = []
+    for row in report["rows"]:
+        compact = {key: copy.deepcopy(row[key]) for key in (
+            "case", "evaluation", "mode", "transport", "seed", "passed", "exploit_observed") if key in row}
+        if "error" in row:
+            compact["error"] = "Recorded error; see full report for details."
+        if isinstance(row.get("task"), dict) and "completed" in row["task"]:
+            compact["task"] = {"completed": row["task"]["completed"]}
+        result["rows"].append(compact)
+    return result
 
 
 def write_reports(report: dict, directory: Path) -> None:
@@ -34,6 +53,7 @@ def write_reports(report: dict, directory: Path) -> None:
             and value.startswith(("=", "+", "-", "@", "\t", "\r")) else value for key in performance_columns})
     save("performance.csv", performance_output.getvalue())
     save("report.json", json.dumps(report, indent=2))
+    save("comparison.json", json.dumps(comparison_snapshot(report), separators=(",", ":")))
     markdown = ["# MCP simulation evaluation", "", f'Run status: {report["status"]}', "",
                 "```json", json.dumps(summary, indent=2), "```", "",
                 "| Evaluation | Transport | Server | Case | Seed | Task | Result |", "|---|---|---|---|---|---|---|"]

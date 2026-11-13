@@ -48,10 +48,20 @@ COUNTERFACTUAL_SCHEMA = {"type": "object", "additionalProperties": False, "requi
 UTILIZATION_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["kind", "arguments", "label"],
     "properties": {"kind": {"const": "utilization"}, "arguments": SCHEMAS["simulate_recovery_resilience"],
         "label": {"type": "string", "maxLength": 80}}}
+PORTFOLIO_ACTION_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["kind", "arguments", "label"],
+    "properties": {"kind": {"const": "portfolio"}, "arguments": SCHEMAS["evaluate_recovery_portfolio"],
+        "label": {"type": "string", "maxLength": 80}}}
+DIAGNOSTIC_ACTION_SCHEMA = {"type": "object", "additionalProperties": False,
+    "required": ["kind", "arguments", "max_causes", "label"], "properties": {
+        "kind": {"const": "diagnostics"}, "arguments": SCHEMAS["simulate_recovery_resilience"],
+        "max_causes": {"type": "integer", "minimum": 1, "maximum": 8}, "label": {"type": "string", "maxLength": 80}}}
+OBJECTIVE_ACTION_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["kind", "arguments", "label"],
+    "properties": {"kind": {"const": "objectives"}, "arguments": SCHEMAS["search_recovery_capacity"],
+        "label": {"type": "string", "maxLength": 80}}}
 GRAPH_MANIFEST_SCHEMA = {"type": "object", "required": ["schema_version", "seed", "graph", "actions"], "additionalProperties": False,
     "properties": {"schema_version": {"const": 2}, "seed": {"type": "integer"}, "graph": {"type": "object"},
         "actions": {"type": "array", "minItems": 1, "maxItems": 200,
-                    "items": {"oneOf": [CALL_SCHEMA, RACE_SCHEMA, ROOT_CHANGE_SCHEMA, ROOT_DRIFT_SCHEMA, RESILIENCE_SCHEMA, STRATEGY_ACTION_SCHEMA, COUNTERFACTUAL_SCHEMA, UTILIZATION_SCHEMA]}}}}
+                    "items": {"oneOf": [CALL_SCHEMA, RACE_SCHEMA, ROOT_CHANGE_SCHEMA, ROOT_DRIFT_SCHEMA, RESILIENCE_SCHEMA, STRATEGY_ACTION_SCHEMA, COUNTERFACTUAL_SCHEMA, UTILIZATION_SCHEMA, PORTFOLIO_ACTION_SCHEMA, DIAGNOSTIC_ACTION_SCHEMA, OBJECTIVE_ACTION_SCHEMA]}}}}
 
 
 def validate_graph_manifest(manifest):
@@ -61,6 +71,45 @@ def validate_graph_manifest(manifest):
     allowed = set(manifest["graph"]) | {"PAY-001"}
     for action in manifest["actions"]:
         if action["kind"] == "roots_change":
+            continue
+        if action["kind"] in ("diagnostics", "objectives"):
+            from .resilience import closure
+            base = action["arguments"]["scenario"] if action["kind"] == "objectives" else action["arguments"]
+            scope = set(closure(base["record_id"], manifest["graph"]))
+            if (base["record_id"] not in manifest["graph"]
+                    or any(row["record_id"] not in scope for row in base["durations"] + base["faults"])
+                    or len({row["record_id"] for row in base["durations"]}) != len(base["durations"])
+                    or len({(row["record_id"], row["status"]) for row in base["faults"]}) != len(base["faults"])
+                    or any(row["worker"] >= base["max_parallel"] or row["start_ms"] >= row["end_ms"] for row in base["worker_outages"])):
+                raise ValueError("invalid recovery diagnostic scenario")
+            if action["kind"] == "objectives":
+                args = action["arguments"]
+                keys = [row["record_id"] for row in args["weights"]]
+                times = [row["at_ms"] for row in args["milestones"]]
+                if (len(set(keys)) != len(keys) or not set(keys) <= scope or len(set(times)) != len(times)
+                        or any(time > args["horizon_ms"] for time in times)
+                        or any(row["worker"] >= option for row in base["worker_outages"] for option in args["worker_options"])):
+                    raise ValueError("invalid recovery objective or worker options")
+            continue
+        if action["kind"] == "portfolio":
+            from .resilience import closure
+            args = action["arguments"]
+            samples, strategies = args["scenarios"], args["strategies"]
+            if (len({row["label"] for row in samples}) != len(samples)
+                    or len({row["label"] for row in strategies}) != len(strategies)
+                    or len({row["scenario"]["record_id"] for row in samples}) != 1):
+                raise ValueError("invalid portfolio labels or targets")
+            for sample in samples:
+                base = sample["scenario"]
+                scope = set(closure(base["record_id"], manifest["graph"]))
+                if (base["record_id"] not in manifest["graph"]
+                        or any(row["record_id"] not in scope for row in base["durations"] + base["faults"])
+                        or len({row["record_id"] for row in base["durations"]}) != len(base["durations"])
+                        or len({(row["record_id"], row["status"]) for row in base["faults"]}) != len(base["faults"])
+                        or any(row["start_ms"] >= row["end_ms"] or row["worker"] >= base["max_parallel"]
+                               or any(row["worker"] >= policy["max_parallel"] for policy in strategies)
+                               for row in base["worker_outages"])):
+                    raise ValueError("invalid portfolio scenario")
             continue
         if action["kind"] == "counterfactual":
             from .counterfactual_oracle import selected
@@ -102,10 +151,10 @@ def validate_graph_manifest(manifest):
     return manifest
 
 
-def generate_graph_manifest(seed, steps=60, *, nodes=32, width=4, parallel_calls=8, race_topology="shared", root_churn=False, outage_stress=False, timeline_stress=False, resilience_stress=False, strategy_stress=False, analysis_stress=False, utilization_stress=False):
+def generate_graph_manifest(seed, steps=60, *, nodes=32, width=4, parallel_calls=8, race_topology="shared", root_churn=False, outage_stress=False, timeline_stress=False, resilience_stress=False, strategy_stress=False, analysis_stress=False, utilization_stress=False, portfolio_stress=False, diagnostics_stress=False, objectives_stress=False):
     if type(steps) is not int or not 1 <= steps <= 200 or type(parallel_calls) is not int or not 2 <= parallel_calls <= 32:
         raise ValueError("graph campaigns require 1 to 200 actions and 2 to 32 parallel requests")
-    if race_topology not in ("shared", "mixed") or any(type(flag) is not bool for flag in (root_churn, outage_stress, timeline_stress, resilience_stress, strategy_stress, analysis_stress, utilization_stress)):
+    if race_topology not in ("shared", "mixed") or any(type(flag) is not bool for flag in (root_churn, outage_stress, timeline_stress, resilience_stress, strategy_stress, analysis_stress, utilization_stress, portfolio_stress, diagnostics_stress, objectives_stress)):
         raise ValueError("invalid graph campaign stress profile")
     graph = generate_graph(seed, nodes, width)
     layers, rng, actions = validate_graph(graph), random.Random(seed), []
@@ -126,6 +175,35 @@ def generate_graph_manifest(seed, steps=60, *, nodes=32, width=4, parallel_calls
             "faults": [{"record_id": layers[0][0], "status": "investigating", "failed_attempts": 2}],
             "worker_outages": [{"worker": 0, "start_ms": 0, "end_ms": 2}, {"worker": 0, "start_ms": 1, "end_ms": 5},
                                {"worker": 1, "start_ms": 6, "end_ms": 8}]}})
+    def diagnostics_probe(label, exhausted=False):
+        actions.append({"kind": "diagnostics", "label": label, "max_causes": 1 if exhausted else 8,
+            "arguments": {"record_id": tip, "max_parallel": 2, "max_attempts": 1 if exhausted else 3, "retry_backoff_ms": 2,
+                "durations": [{"record_id": key, "investigate_ms": 3, "resolve_ms": 4} for key in layers[0][:2]],
+                "faults": [{"record_id": key, "status": "investigating", "failed_attempts": 1} for key in layers[0][:2]],
+                "worker_outages": [{"worker": 0, "start_ms": 0, "end_ms": 3}, {"worker": 0, "start_ms": 2, "end_ms": 5},
+                                   {"worker": 1, "start_ms": 0, "end_ms": 2}]}})
+    def objective_probe(label):
+        actions.append({"kind": "objectives", "label": label, "arguments": {
+            "scenario": {"record_id": tip,"max_parallel":4,"max_attempts":3,"retry_backoff_ms":2,
+                "durations":[{"record_id":layers[0][0],"investigate_ms":3,"resolve_ms":2}],
+                "faults":[{"record_id":layers[0][0],"status":"investigating","failed_attempts":1}],
+                "worker_outages":[{"worker":0,"start_ms":3,"end_ms":6}]},
+            "weights":[{"record_id":layers[0][0],"weight":3},{"record_id":tip,"weight":10}],
+            "horizon_ms":nodes*5,"milestones":[{"at_ms":nodes,"required_basis_points":2000},
+                {"at_ms":nodes*5,"required_basis_points":10000}],"worker_options":[1,2,4],"require_complete":True,
+            "max_worker_busy_ms":nodes*4,"max_unresolved_weight_ms":nodes*50}})
+    def portfolio_probe(label):
+        base = {"record_id": tip, "max_parallel": 3, "max_attempts": 3, "retry_backoff_ms": 2,
+            "durations": [{"record_id": layers[0][0], "investigate_ms": 4, "resolve_ms": 2}],
+            "faults": [{"record_id": layers[0][0], "status": "investigating", "failed_attempts": 2}],
+            "worker_outages": [{"worker": 0, "start_ms": 0, "end_ms": 3}, {"worker": 0, "start_ms": 2, "end_ms": 5}]}
+        nominal = {**copy.deepcopy(base), "faults": [], "worker_outages": []}
+        actions.append({"kind": "portfolio", "label": label, "arguments": {
+            "scenarios": [{"label": "disrupted", "scenario": base}, {"label": "nominal", "scenario": nominal}],
+            "strategies": [{"label": "fragile", "max_parallel": 2, "max_attempts": 1, "retry_backoff_ms": 0},
+                           {"label": "resilient", "max_parallel": 3, "max_attempts": 3, "retry_backoff_ms": 2},
+                           {"label": "patient", "max_parallel": 2, "max_attempts": 4, "retry_backoff_ms": 5}],
+            "deadline_ms": nodes * 8, "max_worker_busy_ms": nodes * 4}})
     def resilience_probe(label, corruption="none", attempts=3):
         actions.append({"kind": "resilience", "label": label, "corruption": corruption, "arguments": {
             "record_id": tip, "max_parallel": 3, "durations": [{"record_id": layers[0][0], "investigate_ms": 10, "resolve_ms": 3}],
@@ -154,6 +232,13 @@ def generate_graph_manifest(seed, steps=60, *, nodes=32, width=4, parallel_calls
 
     call("analyze_dependencies", {"record_id": tip}, "initial_analysis")
     call("incident_bundle", {"record_id": tip}, "linked_resources")
+    if objectives_stress:
+        objective_probe("weighted_recovery_capacity")
+    if diagnostics_stress:
+        diagnostics_probe("worker_wait_explanations")
+        diagnostics_probe("multi_root_failure_paths", exhausted=True)
+    if portfolio_stress:
+        portfolio_probe("cross_scenario_policy_matrix")
     if utilization_stress:
         utilization_probe("retry_pressure_utilization")
     if analysis_stress:
@@ -228,6 +313,12 @@ def generate_graph_manifest(seed, steps=60, *, nodes=32, width=4, parallel_calls
     call("batch_update_records", conflict, "receipt_payload_conflict")
     guided(guided_target, "approved_root")
     guided(guided_target, "approved_root")
+    if objectives_stress:
+        objective_probe("mid_campaign_weighted_objectives")
+    if diagnostics_stress:
+        diagnostics_probe("mid_campaign_waits_and_causes", exhausted=True)
+    if portfolio_stress:
+        portfolio_probe("mid_campaign_trace_regressions")
     if utilization_stress:
         utilization_probe("mid_campaign_utilization")
     if analysis_stress:
@@ -250,6 +341,12 @@ def generate_graph_manifest(seed, steps=60, *, nodes=32, width=4, parallel_calls
             call("batch_update_records", batch([update(key) for key in selected], f"resolve-{len(actions)}"), "dependency_wave")
     call("analyze_dependencies", {"record_id": tip}, "completed_analysis")
     call("incident_bundle", {"record_id": tip}, "completed_resources")
+    if objectives_stress:
+        objective_probe("completed_capacity_selection")
+    if diagnostics_stress:
+        diagnostics_probe("completed_recovery_explanations")
+    if portfolio_stress:
+        portfolio_probe("completed_portfolio_ties")
     if utilization_stress:
         utilization_probe("empty_capacity_utilization")
     if analysis_stress:
@@ -270,7 +367,13 @@ def generate_graph_manifest(seed, steps=60, *, nodes=32, width=4, parallel_calls
         raise ValueError(f"this graph needs at least {minimum} campaign actions")
     while len(actions) < steps:
         index, key = len(actions), rng.choice(ordered)
-        if utilization_stress and index % 23 == 0:
+        if objectives_stress and index % 37 == 0:
+            objective_probe("post_stress_objectives")
+        elif diagnostics_stress and index % 31 == 0:
+            diagnostics_probe("post_stress_explanations", exhausted=bool(index % 2))
+        elif portfolio_stress and index % 29 == 0:
+            portfolio_probe("post_stress_portfolio")
+        elif utilization_stress and index % 23 == 0:
             utilization_probe("post_stress_utilization")
         elif analysis_stress and index % 17 == 0:
             analysis_probe("post_stress_counterfactuals", budget=2 if index % 2 else 4)
@@ -535,6 +638,21 @@ def check_utilization_action(oracle, action, simulated, analyzed):
     return verify(oracle, action, simulated, analyzed, matches)
 
 
+def check_portfolio_action(oracle, action, responses):
+    from .portfolio_oracle import verify
+    return verify(oracle, action, responses, matches)
+
+
+def check_diagnostic_action(oracle, action, responses):
+    from .explanation_oracle import verify
+    return verify(oracle, action, responses, matches)
+
+
+def check_objective_action(oracle, action, responses):
+    from .objective_oracle import verify
+    return verify(oracle, action, responses, matches)
+
+
 def verify_race(oracle, requests, results, published_receipts):
     """Find a legal order from per-record version witnesses and dependency constraints.
 
@@ -667,7 +785,40 @@ async def graph_campaign_matrix(directory: Path, mode: str, transport: str, mani
             start, trace_start = len(notifications), len(client.events)
             expected_notifications, expected_catalog, response_ok = [], 0, True
             root_checks = {}
-            if action["kind"] == "utilization":
+            if action["kind"] == "objectives":
+                from .objective_oracle import witnesses as objective_witnesses
+                searched = await call("search_recovery_capacity", action["arguments"])
+                variants = objective_witnesses(action["arguments"])
+                traces = await asyncio.gather(*(call("simulate_recovery_resilience", variant) for variant in variants))
+                args = action["arguments"]
+                evaluated = await call("evaluate_recovery_objectives", {"scenario": variants[0],"trace": traces[0].structuredContent or {},
+                    **{key:args[key] for key in ("weights","milestones","horizon_ms")}})
+                returned = [searched,evaluated,*traces]
+                response_ok = check_objective_action(oracle,action,returned)
+                responses = [result.model_dump(mode="json") for result in returned]
+                expected_summary = {"capacity_and_objectives_verified":response_ok}
+            elif action["kind"] == "diagnostics":
+                simulated = await call("simulate_recovery_resilience", action["arguments"])
+                request = {"scenario": action["arguments"], "trace": simulated.structuredContent or {}}
+                waits, failures = await asyncio.gather(call("analyze_recovery_waits", request),
+                    call("explain_recovery_failures", {**request, "max_causes": action["max_causes"]}))
+                returned = [simulated, waits, failures]
+                response_ok = check_diagnostic_action(oracle, action, returned)
+                responses = [result.model_dump(mode="json") for result in returned]
+                expected_summary = {"waits_and_failure_paths_verified": response_ok}
+            elif action["kind"] == "portfolio":
+                from .portfolio_oracle import witnesses as portfolio_witnesses
+                evaluated = await call("evaluate_recovery_portfolio", action["arguments"])
+                variants = portfolio_witnesses(action["arguments"])
+                traces = await asyncio.gather(*(call("simulate_recovery_resilience", scenario) for scenario in variants))
+                compared = await call("compare_recovery_traces", {"baseline": {"scenario": variants[0], "trace": traces[0].structuredContent or {}},
+                    "candidate": {"scenario": variants[1], "trace": traces[1].structuredContent or {}},
+                    "deadline_ms": action["arguments"]["deadline_ms"]})
+                returned = [evaluated, compared, *traces]
+                response_ok = check_portfolio_action(oracle, action, returned)
+                responses = [result.model_dump(mode="json") for result in returned]
+                expected_summary = {"portfolio_and_trace_differences_verified": response_ok}
+            elif action["kind"] == "utilization":
                 simulated = await call("simulate_recovery_resilience", action["arguments"])
                 analyzed = await call("analyze_recovery_utilization", {"scenario": action["arguments"], "trace": simulated.structuredContent or {}})
                 response_ok = check_utilization_action(oracle, action, simulated, analyzed)
@@ -772,7 +923,7 @@ async def graph_campaign_matrix(directory: Path, mode: str, transport: str, mani
                         and client.root_mode == oracle.root_mode)
             rows.append({"case": f"graph_campaign_{manifest['seed']}_{index:03}_{action['label']}", "mode": mode,
                 "transport": transport, "evaluation": "protocol", "suite": "dense", "kind": "resilience",
-                "feature": "Recovery utilization" if action["kind"] == "utilization" else "Counterfactual recovery" if action["kind"] == "counterfactual" else "Recovery decisions" if action["kind"] == "strategy" else "Recovery resilience" if action["kind"] == "resilience" else "Dependency graph campaigns", "campaign_seed": manifest["seed"], "campaign_step": index,
+                "feature": "Recovery objectives" if action["kind"] == "objectives" else "Recovery explanations" if action["kind"] == "diagnostics" else "Recovery portfolios" if action["kind"] == "portfolio" else "Recovery utilization" if action["kind"] == "utilization" else "Counterfactual recovery" if action["kind"] == "counterfactual" else "Recovery decisions" if action["kind"] == "strategy" else "Recovery resilience" if action["kind"] == "resilience" else "Dependency graph campaigns", "campaign_seed": manifest["seed"], "campaign_step": index,
                 "passed": bool(response_ok and state_ok and expected_uris == actual_uris and catalog_ok),
                 "graph_nodes": len(manifest["graph"]), "graph_edges": sum(map(len, manifest["graph"].values())),
                 "action": action, "responses": responses, "expected": expected_summary,

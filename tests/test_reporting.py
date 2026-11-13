@@ -221,3 +221,196 @@ def test_graph_topology_is_bounded_and_invalid_graphs_cannot_inject_markup(tmp_p
     html = (tmp_path / "report.html").read_text(encoding="utf-8")
     assert 'invalid recorded graph' in html and 'id="dependency-topology"' not in html
     assert payload not in html
+
+
+def test_recovery_policy_matrix_and_trace_changes_render_escaped_recorded_results(tmp_path):
+    from test_recovery_portfolio import arguments, pair
+    from test_outage_recovery import operations
+    from simlab.dashboard import recovery_decision_summaries
+    _, _, _, graph = operations(tmp_path)
+    portfolio = graph.recovery_portfolio(arguments())
+    compared = graph.compare_recovery_traces(pair(graph))
+    marker = '<img src=x onerror="alert(1)">'
+    portfolio["robust_strategy"] = marker
+    compared["targets"][0]["record_id"] = marker
+    row = {"case": "matrix", "evaluation": "protocol", "passed": True, "responses": [
+        {"structuredContent": portfolio}, {"structuredContent": compared}, {"structuredContent": portfolio}]}
+    summary = recovery_decision_summaries(row)
+    assert summary.count('<h3>Recorded recovery policy matrix') == 1
+    assert 'Recorded recovery changes' in summary and 'Pareto tradeoffs' in summary
+    assert '<td>fault</td>' in summary and '<td>unchanged</td>' in summary
+    assert marker not in summary and '&lt;img' in summary
+    report = {"summary": summarize([row]), "model": {"model": "local"}, "rows": [row], "methodology": []}
+    write_html_report(report, tmp_path / "report.html")
+    html = (tmp_path / "report.html").read_text(encoding="utf-8")
+    assert 'Recorded recovery policy matrix' in html and marker not in html
+    portfolio["cells"][0]["completed"] = "invalid"
+    compared["delta"]["elapsed_ms"] = "invalid"
+    assert recovery_decision_summaries(row) == ""
+
+
+def test_recovery_trace_change_report_never_formats_unfinished_work_as_speedup(tmp_path):
+    from test_recovery_portfolio import pair
+    from test_outage_recovery import operations
+    from test_resilience import scenario
+    from simlab.dashboard import recovery_decision_summaries
+    _, _, _, graph = operations(tmp_path)
+    bad = scenario();bad["max_attempts"] = 1
+    bad["faults"] = [{"record_id": "GR-000", "status": "investigating", "failed_attempts": 1}]
+    value = graph.compare_recovery_traces(pair(graph, scenario(), bad))
+    summary = recovery_decision_summaries({"response": {"structuredContent": value}})
+    assert 'Not comparable' in summary and '<td>Unfinished</td><td>lost</td>' in summary
+
+
+def test_recorded_wait_and_failure_summaries_escape_paths_and_preserve_evidence(tmp_path):
+    from test_outage_recovery import operations
+    from test_recovery_explanations import request,analyze,explain
+    from test_resilience import scenario
+    from simlab.explanation_reporting import render_explanation_summaries
+    _, _, _, graph = operations(tmp_path)
+    base = scenario();base["max_attempts"] = 1
+    base["faults"] = [{"record_id":"GR-000","status":"investigating","failed_attempts":1}]
+    args = request(graph,base)
+    waits, failures = analyze(graph,args),explain(graph,args)
+    marker = '<img src=x onerror="alert(1)">'
+    waits["attempts"][0]["record_id"] = marker
+    failures["targets"][0]["causes"][0]["path"][0]["record_id"] = marker
+    row = {"case":"explanations","evaluation":"protocol","passed":True,"responses":[
+        {"structuredContent":waits},{"structuredContent":failures},{"structuredContent":waits}]}
+    summary = render_explanation_summaries(row)
+    assert summary.count('<h3>Recorded ready-to-dispatch waits') == 1
+    assert 'Recorded failure propagation' in summary and 'GR-003 / resolved' in summary
+    assert marker not in summary and '&lt;img' in summary
+    assert 'not worker-capacity totals' in summary
+    report = {"summary":summarize([row]),"model":{"model":"local"},"rows":[row],"methodology":[]}
+    write_html_report(report,tmp_path/'report.html')
+    html = (tmp_path/'report.html').read_text(encoding='utf-8')
+    assert 'Recorded failure propagation' in html and marker not in html
+    assert marker in row["responses"][0]["structuredContent"]["attempts"][0]["record_id"]
+    waits["totals"]["dispatch_gap_ms"] = False
+    failures["roots"][0]["affected_record_count"] = False
+    assert render_explanation_summaries(row) == ''
+
+
+def test_explanation_summaries_bound_large_tables_and_skip_error_results(tmp_path):
+    import copy
+    from test_outage_recovery import operations
+    from test_recovery_explanations import request,analyze,explain
+    from test_resilience import scenario
+    from simlab.explanation_reporting import render_explanation_summaries
+    _, _, _, graph = operations(tmp_path)
+    base = scenario();base["max_attempts"] = 1
+    base["faults"] = [{"record_id":"GR-000","status":"investigating","failed_attempts":1}]
+    args = request(graph,base)
+    waits, failures = analyze(graph,args),explain(graph,args)
+    waits["attempts"] = [copy.deepcopy(waits["attempts"][0]) for _ in range(101)]
+    failures["targets"] = [copy.deepcopy(failures["targets"][0]) for _ in range(21)]
+    failures["targets"][0]["truncated"] = True
+    sources = [{"structuredContent":waits},{"structuredContent":failures}]
+    summary = render_explanation_summaries({"responses":sources})
+    assert 'first 100 of 101' in summary and 'first 20 of 21 incident explanations' in summary
+    assert 'causes truncated' in summary and 'full evidence' in summary
+    assert summary.count('<tr>') == 103  # 100 attempts, one root, two headers.
+    assert render_explanation_summaries({"responses":[{**source,"isError":True} for source in sources]}) == ''
+
+
+def test_compact_comparison_export_omits_evidence_without_changing_scope_or_grades(tmp_path):
+    import copy
+    import json
+    from simlab.reporting import comparison_snapshot,write_reports
+    marker = 'large-recorded-evidence-' * 10000
+    rows = [{"case":"dense","evaluation":"protocol","mode":"hardened","transport":"stdio","passed":True,
+        "responses":[{"structuredContent":{"evidence":marker}}]},
+        {"case":"actor","evaluation":"llm","mode":"vulnerable","transport":"sse","passed":True,"seed":7,
+         "exploit_observed":True,"task":{"completed":False,"status":"incomplete","checks":{"recorded":True},"detail":marker},"deputy":{"answer":marker}},
+        {"case":"actor","evaluation":"llm","mode":"hardened","transport":"sse","passed":False,"error":marker}]
+    report = {"schema_version":2,"status":"completed","summary":summarize(rows),"model":{"model":"local"},
+        "experiment":{"require_task_success":False},"rows":rows,"methodology":[]}
+    before = copy.deepcopy(report)
+    compact = comparison_snapshot(report)
+    assert report == before and compact["experiment"] == report["experiment"]
+    assert compact["rows"][1]["task"] == {"completed":False}
+    assert 'task' not in compact["rows"][2] and 'seed' not in compact["rows"][2]
+    assert 'error' in compact["rows"][2] and 'exploit_observed' not in compact["rows"][2]
+    assert marker not in json.dumps(compact) and len(json.dumps(compact)) < len(json.dumps(report))//20
+    write_reports(report,tmp_path)
+    assert json.loads((tmp_path/'comparison.json').read_text()) == compact
+    assert 'href="comparison.json"' in (tmp_path/'report.html').read_text(encoding='utf-8')
+    assert json.loads((tmp_path/'report.json').read_text())["rows"][0]["responses"][0]["structuredContent"]["evidence"] == marker
+
+
+def test_compact_and_full_exports_produce_identical_javascript_comparisons(tmp_path):
+    import json
+    from pathlib import Path
+    import shutil
+    import subprocess
+    import pytest
+    from simlab.reporting import comparison_snapshot
+    if not shutil.which('node'): pytest.skip('Node is required for cross-language comparison parity')
+    rows = [{"case":"protocol","evaluation":"protocol","passed":True,"responses":[{"heavy":"discard"}]},
+        {"case":"actor","evaluation":"llm","mode":"vulnerable","transport":"sse","seed":7,"passed":True,
+         "exploit_observed":True,"task":{"completed":False}},
+        {"case":"actor","evaluation":"llm","mode":"hardened","transport":"sse","seed":7,"passed":True,
+         "exploit_observed":False,"task":{"completed":True}},
+        {"case":"actor","evaluation":"llm","mode":"hardened","transport":"sse","seed":8,"passed":False,"error":"details"},
+        {"case":"other","evaluation":"llm","mode":"vulnerable","transport":"stdio","passed":True,"exploit_observed":True}]
+    full = {"schema_version":2,"model":{"model":"local"},"experiment":{"require_task_success":True},"rows":rows}
+    compact = comparison_snapshot(full)
+    for name,value in [('full',full),('compact',compact)]: (tmp_path/(name+'.json')).write_text(json.dumps(value))
+    helper = Path(__file__).resolve().parents[1]/'simlab'/'dashboard-data.js'
+    script = """const assert=require('node:assert/strict'),fs=require('node:fs');
+const data=require(process.argv[1]),full=JSON.parse(fs.readFileSync(process.argv[2],'utf8')),compact=JSON.parse(fs.readFileSync(process.argv[3],'utf8'));
+data.validateReport(compact);
+assert.deepEqual(data.stats(compact.rows),data.stats(full.rows));assert.deepEqual(data.scope(compact),data.scope(full));
+assert.deepEqual(data.compare(full,compact),data.compare(full,full));assert.deepEqual(data.compare(compact,full),data.compare(full,full));
+const other={schema_version:1,model:{model:'different'},rows:full.rows.slice(1,3)};
+assert.deepEqual(data.compare(other,compact),data.compare(other,full));
+"""
+    result = subprocess.run(['node','-e',script,str(helper),str(tmp_path/'full.json'),str(tmp_path/'compact.json')],capture_output=True,text=True)
+    assert result.returncode == 0,result.stderr
+
+
+def test_weighted_objectives_and_capacity_summaries_distinguish_partial_recovery(tmp_path):
+    from test_outage_recovery import operations
+    from test_recovery_objectives import search_args,evaluated
+    from simlab.objective_reporting import render_objective_summaries
+    _,_,_,graph = operations(tmp_path)
+    args = search_args()
+    args['scenario'].update(max_attempts=1,faults=[{'record_id':'GR-001','status':'investigating','failed_attempts':1}])
+    args.update(weights=[{'record_id':'GR-002','weight':10}],horizon_ms=100,
+        milestones=[{'at_ms':100,'required_basis_points':10000}],require_complete=False)
+    objectives = evaluated(graph,args);capacity = graph.search_recovery_capacity(args)
+    row = {'case':'weighted','evaluation':'protocol','passed':True,'responses':[
+        {'structuredContent':objectives},{'structuredContent':capacity},{'structuredContent':objectives}]}
+    summary = render_objective_summaries(row)
+    assert summary.count('<h3>Recorded weighted recovery objectives') == 1
+    assert 'All targets eventually completed: Yes' in summary and 'Whole recovery completed: No' in summary
+    assert 'Whole recovery required: No' in summary and 'Smallest qualifying tested pool: <b>1</b>' in summary
+    assert '<td>100.00%</td>' in summary and 'not probabilities' in summary
+    marker = '<img src=x onerror="alert(1)">'
+    objectives['snapshot'][0]['id'] = marker
+    report = {'summary':summarize([row]),'model':{'model':'local'},'rows':[row],'methodology':[]}
+    write_html_report(report,tmp_path/'report.html')
+    html = (tmp_path/'report.html').read_text(encoding='utf-8')
+    assert marker not in html and '&lt;img' in html and 'Recorded worker capacity search' in html
+    objectives['unresolved_weight_ms'] = False;capacity['recommended_workers'] = False
+    assert render_objective_summaries(row) == ''
+
+
+def test_weighted_summary_zero_horizon_and_all_capacity_candidates_are_visible(tmp_path):
+    import json
+    from test_outage_recovery import operations,DIAMOND
+    from test_recovery_objectives import search_args,evaluated
+    from simlab.objective_reporting import render_objective_summaries
+    _,config,_,graph = operations(tmp_path)
+    from pathlib import Path
+    path = Path(config['state_path']);data = json.loads(path.read_text())
+    for key in DIAMOND: data['records'][key]['status'] = 'resolved'
+    path.write_text(json.dumps(data))
+    args = search_args();args.update(horizon_ms=0,milestones=[{'at_ms':0,'required_basis_points':10000}],worker_options=list(range(1,17)))
+    sources = [{'structuredContent':evaluated(graph,args)},{'structuredContent':graph.search_recovery_capacity(args)}]
+    summary = render_objective_summaries({'responses':sources})
+    assert 'No observation interval' in summary
+    assert summary.count('<tr>') == 19  # One milestone, sixteen candidates, two headers.
+    assert '<td>16</td>' in summary
+    assert render_objective_summaries({'responses':[{**source,'isError':True} for source in sources]}) == ''

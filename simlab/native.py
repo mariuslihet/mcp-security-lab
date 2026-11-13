@@ -228,6 +228,48 @@ async def native_matrix(directory: Path, mode: str, transport: str):
         record("mcp_recovery_utilization", not utilized.isError and utilized.structuredContent["totals"]["productive_ms"] == 12
                and utilized.structuredContent["totals"]["busy_ms"] == 13 and Path(config["state_path"]).read_bytes() == before,
                feature="Recovery utilization", response=utilized.model_dump(mode="json"), recovery_trace=resilient.structuredContent)
+        nominal = {**resilience_args, "faults": [], "worker_outages": []}
+        portfolio_args = {"scenarios": [{"label": "disrupted", "scenario": resilience_args}, {"label": "nominal", "scenario": nominal}],
+            "strategies": [{"label": "two", "max_parallel": 2, "max_attempts": 3, "retry_backoff_ms": 2},
+                           {"label": "three", "max_parallel": 3, "max_attempts": 3, "retry_backoff_ms": 2}],
+            "deadline_ms": 1000, "max_worker_busy_ms": 1000}
+        portfolio = await session.call_tool(prefix + "evaluate_recovery_portfolio", portfolio_args)
+        record("mcp_recovery_portfolio", not portfolio.isError and len(portfolio.structuredContent["cells"]) == 4
+               and portfolio.structuredContent["robust_strategy"] in ("two", "three"),
+               feature="Recovery portfolios", response=portfolio.model_dump(mode="json"))
+        clean = await session.call_tool(prefix + "simulate_recovery_resilience", nominal)
+        differences = await session.call_tool(prefix + "compare_recovery_traces", {
+            "baseline": {"scenario": resilience_args, "trace": resilient.structuredContent},
+            "candidate": {"scenario": nominal, "trace": clean.structuredContent}, "deadline_ms": 1000})
+        record("mcp_recovery_trace_comparison", not differences.isError and differences.structuredContent["delta"]["retry_count"] == -1
+               and differences.structuredContent["counts"]["improved"] > 0 and Path(config["state_path"]).read_bytes() == before,
+               feature="Recovery trace comparison", response=differences.model_dump(mode="json"),
+               recovery_traces=[resilient.structuredContent, clean.structuredContent])
+        waits = await session.call_tool(prefix + "analyze_recovery_waits", {"scenario": resilience_args, "trace": resilient.structuredContent})
+        record("mcp_recovery_wait_explanations", not waits.isError
+               and len(waits.structuredContent["attempts"]) == len(resilient.structuredContent["attempts"])
+               and waits.structuredContent["totals"]["required_backoff_ms"] == 2,
+               feature="Recovery wait explanations", response=waits.model_dump(mode="json"), recovery_trace=resilient.structuredContent)
+        exhausted_args = {**resilience_args, "max_attempts": 1}
+        exhausted = await session.call_tool(prefix + "simulate_recovery_resilience", exhausted_args)
+        causes = await session.call_tool(prefix + "explain_recovery_failures", {
+            "scenario": exhausted_args, "trace": exhausted.structuredContent, "max_causes": 2})
+        record("mcp_recovery_failure_paths", not causes.isError and not causes.structuredContent["completed"]
+               and len(causes.structuredContent["roots"]) >= 1 and len(causes.structuredContent["targets"]) >= 1
+               and Path(config["state_path"]).read_bytes() == before,
+               feature="Recovery failure paths", response=causes.model_dump(mode="json"), recovery_trace=exhausted.structuredContent)
+        objective_args = {"weights":[{"record_id":"WF-001","weight":3},{"record_id":"WF-006","weight":10}],
+            "milestones":[{"at_ms":1000,"required_basis_points":10000}],"horizon_ms":1000}
+        scored = await session.call_tool(prefix + "evaluate_recovery_objectives", {
+            "scenario":resilience_args,"trace":resilient.structuredContent,**objective_args})
+        record("mcp_weighted_recovery_objectives", not scored.isError and scored.structuredContent["all_milestones_met"]
+               and scored.structuredContent["unresolved_weight_ms"] > 0 and scored.structuredContent["horizon_coverage_basis_points"] == 10000,
+               feature="Weighted recovery objectives",response=scored.model_dump(mode="json"),recovery_trace=resilient.structuredContent)
+        capacity = await session.call_tool(prefix + "search_recovery_capacity", {"scenario":resilience_args,**objective_args,
+            "worker_options":[2,3,4],"require_complete":True,"max_worker_busy_ms":1000,"max_unresolved_weight_ms":1000000})
+        record("mcp_recovery_capacity_search", not capacity.isError and capacity.structuredContent["recommended_workers"] == 2
+               and len(capacity.structuredContent["candidates"]) == 3 and Path(config["state_path"]).read_bytes() == before,
+               feature="Recovery capacity search",response=capacity.model_dump(mode="json"))
 
     for row in rows:
         row.update(mode=mode, transport=transport, evaluation="protocol", suite="dense",

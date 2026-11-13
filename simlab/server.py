@@ -187,6 +187,16 @@ def create_server(config: dict, hardened: bool) -> Server:
                 value = graph_operations.recovery_sensitivity(arguments)
             elif name == "analyze_recovery_utilization":
                 value = graph_operations.recovery_utilization(arguments)
+            elif name == "evaluate_recovery_portfolio":
+                value = graph_operations.recovery_portfolio(arguments)
+            elif name == "compare_recovery_traces":
+                value = graph_operations.compare_recovery_traces(arguments)
+            elif name in ("analyze_recovery_waits", "explain_recovery_failures"):
+                value = graph_operations.recovery_explanation(name, arguments)
+            elif name == "evaluate_recovery_objectives":
+                value = graph_operations.evaluate_recovery_objectives(arguments)
+            elif name == "search_recovery_capacity":
+                value = graph_operations.search_recovery_capacity(arguments)
             elif name == "incident_bundle":
                 plan = store.plan_resolution(arguments["record_id"], hardened)
                 value = {"record": store.read(arguments["record_id"]),

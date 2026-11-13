@@ -99,7 +99,7 @@ def expected_step(records, receipts, action, hardened):
 
 
 async def campaign_matrix(directory: Path, mode: str, transport: str, *, seed=7, steps=40, manifest_path: Path | None = None,
-                          graph_nodes=0, graph_width=4, parallel_calls=8, race_topology="shared", root_churn=False, outage_stress=False, timeline_stress=False, resilience_stress=False, strategy_stress=False, analysis_stress=False, utilization_stress=False):
+                          graph_nodes=0, graph_width=4, parallel_calls=8, race_topology="shared", root_churn=False, outage_stress=False, timeline_stress=False, resilience_stress=False, strategy_stress=False, analysis_stress=False, utilization_stress=False, portfolio_stress=False, diagnostics_stress=False, objectives_stress=False):
     if manifest_path is not None:
         manifest = read_manifest(manifest_path)
     elif graph_nodes:
@@ -107,7 +107,8 @@ async def campaign_matrix(directory: Path, mode: str, transport: str, *, seed=7,
         manifest = generate_graph_manifest(seed, steps, nodes=graph_nodes, width=graph_width, parallel_calls=parallel_calls,
                                            race_topology=race_topology, root_churn=root_churn, outage_stress=outage_stress, timeline_stress=timeline_stress,
                                            resilience_stress=resilience_stress, strategy_stress=strategy_stress, analysis_stress=analysis_stress,
-                                           utilization_stress=utilization_stress)
+                                           utilization_stress=utilization_stress, portfolio_stress=portfolio_stress, diagnostics_stress=diagnostics_stress,
+                                           objectives_stress=objectives_stress)
     else:
         manifest = generate_manifest(seed, steps)
     if manifest["schema_version"] == 2:

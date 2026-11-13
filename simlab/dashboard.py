@@ -10,6 +10,8 @@ from pathlib import Path
 from urllib.parse import quote
 
 from .grading import compare_cases
+from .explanation_reporting import render_explanation_summaries
+from .objective_reporting import render_objective_summaries
 
 
 def safe(value) -> str:
@@ -110,6 +112,53 @@ def recovery_resources(row):
             '<th scope="col">Worker</th><th scope="col">Successful</th><th scope="col">Failed attempts</th><th scope="col">Unavailable</th>'
             f'<th scope="col">Idle</th><th scope="col">Utilization</th></tr></thead><tbody>{rows}</tbody></table></div></details></section>')
     return ""
+
+
+def recovery_decision_summaries(row):
+    from jsonschema import Draft202012Validator
+    from .recovery_portfolio import PORTFOLIO_OUTPUT, TRACE_COMPARISON_OUTPUT
+    responses = row.get("responses", [])
+    sources = [row.get("response"), *(responses if isinstance(responses, list) else [])]
+    rendered, seen = [], set()
+    for response in sources:
+        value = response.get("structuredContent") if isinstance(response, dict) else None
+        if not isinstance(value, dict):
+            continue
+        if "cells" in value and "portfolio" not in seen and Draft202012Validator(PORTFOLIO_OUTPUT).is_valid(value):
+            seen.add("portfolio")
+            winner = value["robust_strategy"] or "None meets every scenario's deadline and work budget"
+            cells = "".join('<tr>' + ''.join(f'<td>{safe(item)}</td>' for item in (
+                cell["scenario"], cell["strategy"], "Yes" if cell["completed"] else "No", cell["elapsed_ms"],
+                cell["worker_busy_ms"], "Yes" if cell["deadline_met"] else "No", "Yes" if cell["budget_met"] else "No"))
+                + '</tr>' for cell in value["cells"])
+            rendered.append('<section class="recovery-portfolio"><h3>Recorded recovery policy matrix</h3>'
+                f'<p>Robust policy: <b>{safe(winner)}</b></p><p class="helper">{value["scenario_count"]} scenarios · '
+                f'{len(value["strategies"])} policies · deadline {value["deadline_ms"]} simulated ms · '
+                f'work budget {value["max_worker_busy_ms"]} worker-ms. Counts are not probabilities.</p>'
+                f'<p class="helper">Pareto tradeoffs: {safe(", ".join(value["pareto_strategies"]))}. '
+                'Frontier membership alone does not imply feasibility.</p>'
+                '<div class="scroll" tabindex="0" role="region" aria-label="Recovery policy matrix"><table>'
+                '<caption>Recorded scenario and policy outcomes · simulated time</caption><thead><tr>'
+                '<th scope="col">Scenario</th><th scope="col">Policy</th><th scope="col">Completed</th>'
+                '<th scope="col">Elapsed ms</th><th scope="col">Busy worker-ms</th><th scope="col">Deadline met</th>'
+                f'<th scope="col">Budget met</th></tr></thead><tbody>{cells}</tbody></table></div></section>')
+        if "delta" in value and "comparison" not in seen and Draft202012Validator(TRACE_COMPARISON_OUTPUT).is_valid(value):
+            seen.add("comparison")
+            delta = value["delta"]["elapsed_ms"]
+            elapsed = "Not comparable: at least one recovery is unfinished" if delta is None else f"{delta:+d} simulated ms"
+            targets = "".join('<tr>' + ''.join(f'<td>{safe(item)}</td>' for item in (target["record_id"],
+                "Unfinished" if target["baseline_completion_ms"] is None else target["baseline_completion_ms"],
+                "Unfinished" if target["candidate_completion_ms"] is None else target["candidate_completion_ms"], target["change"]))
+                + '</tr>' for target in value["targets"])
+            rendered.append('<section class="recovery-comparison"><h3>Recorded recovery changes</h3>'
+                f'<p>Candidate minus baseline elapsed: {safe(elapsed)}.</p><p class="helper">'
+                + safe(" · ".join(f'{key}: {count}' for key, count in value["counts"].items()))
+                + '</p><p class="helper">These differences do not establish causation. Times are simulated milliseconds.</p>'
+                '<details><summary>Per-incident completion changes</summary><div class="scroll" tabindex="0" role="region" '
+                'aria-label="Incident recovery changes"><table><caption>Recorded completion times</caption><thead><tr>'
+                '<th scope="col">Incident</th><th scope="col">Baseline ms</th><th scope="col">Candidate ms</th>'
+                f'<th scope="col">Change</th></tr></thead><tbody>{targets}</tbody></table></div></details></section>')
+    return "".join(rendered)
 
 
 def render_dashboard(report: dict, destination: Path) -> None:
@@ -245,7 +294,7 @@ def render_dashboard(report: dict, destination: Path) -> None:
         templates.append(f'<template id="evidence-{index}"><h2>{safe(label)}</h2>{error}'
                          f'<div class="evidence-links">{evidence_links(row, destination.parent)}</div>'
                          f'<p class="answer">{safe(row.get("intent", "Fixed protocol probe; inspect the recorded arguments and response below."))}</p>'
-                         f'{recovery_resources(row)}{rubric}{answer}{callback_trace}<h3>Tool-call sequence</h3><ol class="sequence">{"".join(steps)}</ol>'
+                         f'{recovery_resources(row)}{recovery_decision_summaries(row)}{render_explanation_summaries(row)}{render_objective_summaries(row)}{rubric}{answer}{callback_trace}<h3>Tool-call sequence</h3><ol class="sequence">{"".join(steps)}</ol>'
                          f'{"" if steps else "<p class=muted>No deputy tool-call sequence for this check.</p>"}'
                          f'<details><summary>Full recorded evidence</summary><pre class="recorded-result">{safe(json.dumps(row, indent=2, ensure_ascii=True))}</pre></details></template>')
 

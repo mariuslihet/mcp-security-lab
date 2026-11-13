@@ -26,6 +26,35 @@ class GraphOperations:
         records = self.resilience_inputs(arguments)
         return simulate(arguments, self.config.get("dependencies", {}), records)
 
+    def recovery_objective_inputs(self, name, arguments):
+        from .resilience import closure
+        self.validate(name, arguments)
+        records = self.resilience_inputs(arguments["scenario"])
+        scope = set(closure(arguments["scenario"]["record_id"], self.config.get("dependencies", {})))
+        targets = [row["record_id"] for row in arguments["weights"]]
+        times = [row["at_ms"] for row in arguments["milestones"]]
+        if len(set(targets)) != len(targets) or not set(targets) <= scope:
+            raise Denied("objective_targets_invalid")
+        if len(set(times)) != len(times) or any(time > arguments["horizon_ms"] for time in times):
+            raise Denied("objective_milestones_invalid")
+        if name == "search_recovery_capacity" and any(outage["worker"] >= workers
+                for outage in arguments["scenario"]["worker_outages"] for workers in arguments["worker_options"]):
+            raise Denied("capacity_worker_invalid")
+        return records
+
+    def evaluate_recovery_objectives(self, arguments):
+        from .resilience import audit
+        from .recovery_objectives import evaluate
+        records = self.recovery_objective_inputs("evaluate_recovery_objectives", arguments)
+        if not audit(arguments["scenario"], self.config.get("dependencies", {}), records, arguments["trace"])["valid"]:
+            raise Denied("recovery_trace_invalid")
+        return evaluate(arguments)
+
+    def search_recovery_capacity(self, arguments):
+        from .recovery_objectives import capacity_search
+        records = self.recovery_objective_inputs("search_recovery_capacity", arguments)
+        return capacity_search(arguments, self.config.get("dependencies", {}), records)
+
     def recovery_utilization(self, arguments):
         from .resilience import audit
         from .trace_diagnostics import utilization
@@ -34,6 +63,47 @@ class GraphOperations:
         if not audit(arguments["scenario"], self.config.get("dependencies", {}), records, arguments["trace"])["valid"]:
             raise Denied("recovery_trace_invalid")
         return utilization(arguments["scenario"], arguments["trace"])
+
+    def recovery_explanation(self, name, arguments):
+        from .resilience import audit
+        from .recovery_explanations import waits, failures
+        if name not in ("analyze_recovery_waits", "explain_recovery_failures"):
+            raise Denied("unknown_recovery_explanation")
+        self.validate(name, arguments)
+        records = self.resilience_inputs(arguments["scenario"])
+        if not audit(arguments["scenario"], self.config.get("dependencies", {}), records, arguments["trace"])["valid"]:
+            raise Denied("recovery_trace_invalid")
+        return (waits if name == "analyze_recovery_waits" else failures)(arguments, self.config.get("dependencies", {}))
+
+    def recovery_portfolio(self, arguments):
+        from .recovery_portfolio import portfolio
+        self.validate("evaluate_recovery_portfolio", arguments)
+        samples, strategies = arguments["scenarios"], arguments["strategies"]
+        if (len({row["label"] for row in samples}) != len(samples)
+                or len({row["label"] for row in strategies}) != len(strategies)
+                or len({row["scenario"]["record_id"] for row in samples}) != 1):
+            raise Denied("portfolio_labels_or_targets_invalid")
+        for sample in samples:
+            self.resilience_inputs(sample["scenario"])
+            if any(outage["worker"] >= strategy["max_parallel"]
+                   for outage in sample["scenario"]["worker_outages"] for strategy in strategies):
+                raise Denied("portfolio_worker_invalid")
+        records = self.resilience_inputs(samples[0]["scenario"])
+        return portfolio(arguments, self.config.get("dependencies", {}), records)
+
+    def compare_recovery_traces(self, arguments):
+        from .resilience import audit
+        from .recovery_portfolio import compare_traces
+        self.validate("compare_recovery_traces", arguments)
+        baseline, candidate = arguments["baseline"], arguments["candidate"]
+        if baseline["scenario"]["record_id"] != candidate["scenario"]["record_id"]:
+            raise Denied("trace_targets_differ")
+        self.resilience_inputs(baseline["scenario"])
+        records = self.resilience_inputs(candidate["scenario"])
+        for side in (baseline, candidate):
+            if not audit(side["scenario"], self.config.get("dependencies", {}), records, side["trace"])["valid"]:
+                raise Denied("recovery_trace_invalid")
+        return compare_traces(arguments)
 
     def compare_strategies(self, arguments):
         from .recovery_decisions import compare

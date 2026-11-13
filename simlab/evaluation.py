@@ -235,6 +235,12 @@ async def run(args):
                       if replay else args.campaign_analysis_stress,
                   "campaign_utilization_stress": any(action.get("kind") == "utilization" for action in replay["actions"])
                       if replay else args.campaign_utilization_stress,
+                  "campaign_portfolio_stress": any(action.get("kind") == "portfolio" for action in replay["actions"])
+                      if replay else args.campaign_portfolio_stress,
+                  "campaign_diagnostics_stress": any(action.get("kind") == "diagnostics" for action in replay["actions"])
+                      if replay else args.campaign_diagnostics_stress,
+                  "campaign_objectives_stress": any(action.get("kind") == "objectives" for action in replay["actions"])
+                      if replay else args.campaign_objectives_stress,
                   "campaign_graph_width": max(map(len, validate_graph(campaign_graph))) if campaign_graph else
                       args.campaign_graph_width if args.campaign_graph_nodes and not replay else 0,
                   "campaign_max_concurrency": max((len(action["requests"]) for action in replay["actions"] if action.get("kind") == "race"), default=1)
@@ -286,7 +292,8 @@ async def run(args):
                                                       root_churn=args.campaign_root_churn, outage_stress=args.campaign_outage_stress,
                                                       timeline_stress=args.campaign_timeline_stress, resilience_stress=args.campaign_resilience_stress,
                                                       strategy_stress=args.campaign_strategy_stress, analysis_stress=args.campaign_analysis_stress,
-                                                      utilization_stress=args.campaign_utilization_stress)
+                                                      utilization_stress=args.campaign_utilization_stress, portfolio_stress=args.campaign_portfolio_stress,
+                                                      diagnostics_stress=args.campaign_diagnostics_stress, objectives_stress=args.campaign_objectives_stress)
             except Exception as exc:
                 rows.append({"case": "protocol_infrastructure", "evaluation": "protocol", "mode": mode,
                              "transport": transport, "kind": "infrastructure", "passed": False,
@@ -364,6 +371,9 @@ def main():
     parser.add_argument("--campaign-strategy-stress", action="store_true", help="Compare recovery policies with independent traces and score incident deadlines")
     parser.add_argument("--campaign-analysis-stress", action="store_true", help="Search joint mitigations and analyze duration sensitivity against independent traces")
     parser.add_argument("--campaign-utilization-stress", action="store_true", help="Audit worker capacity and retry waiting using independent interval sweeps")
+    parser.add_argument("--campaign-portfolio-stress", action="store_true", help="Evaluate cross-scenario policy matrices and audited trace regressions against independent witnesses")
+    parser.add_argument("--campaign-diagnostics-stress", action="store_true", help="Explain worker waits and multi-root failure paths with independent verification")
+    parser.add_argument("--campaign-objectives-stress", action="store_true", help="Score weighted recovery milestones and search worker capacity with independent integration checks")
     parser.add_argument("--replay-campaign", help="Replay an exported campaign.json instead of generating actions")
     parser.add_argument("--protocol-only", action="store_true", help="Only fixed real-transport probes; explicitly does not evaluate LLM behavior")
     parser.add_argument("--backend", choices=["ollama", "openai"], default="ollama")
@@ -388,10 +398,11 @@ def main():
                                     race_topology=args.campaign_race_topology, root_churn=args.campaign_root_churn, outage_stress=args.campaign_outage_stress,
                                     timeline_stress=args.campaign_timeline_stress, resilience_stress=args.campaign_resilience_stress,
                                     strategy_stress=args.campaign_strategy_stress, analysis_stress=args.campaign_analysis_stress,
-                                    utilization_stress=args.campaign_utilization_stress)
+                                    utilization_stress=args.campaign_utilization_stress, portfolio_stress=args.campaign_portfolio_stress,
+                                    diagnostics_stress=args.campaign_diagnostics_stress, objectives_stress=args.campaign_objectives_stress)
         except ValueError as exc:
             parser.error(str(exc))
-    if (args.campaign_race_topology != "shared" or args.campaign_root_churn or args.campaign_outage_stress or args.campaign_timeline_stress or args.campaign_resilience_stress or args.campaign_strategy_stress or args.campaign_analysis_stress or args.campaign_utilization_stress) and not (args.campaign_graph_nodes or args.replay_campaign):
+    if (args.campaign_race_topology != "shared" or args.campaign_root_churn or args.campaign_outage_stress or args.campaign_timeline_stress or args.campaign_resilience_stress or args.campaign_strategy_stress or args.campaign_analysis_stress or args.campaign_utilization_stress or args.campaign_portfolio_stress or args.campaign_diagnostics_stress or args.campaign_objectives_stress) and not (args.campaign_graph_nodes or args.replay_campaign):
         parser.error("advanced race/root profiles require a graph campaign")
     if args.replay_campaign:
         try:

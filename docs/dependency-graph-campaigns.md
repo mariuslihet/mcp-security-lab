@@ -20,6 +20,12 @@ Graph campaigns extend the independent-record campaign format with bounded depen
 | `search_recovery_mitigations` | `scenario`, `deadline_ms`, `candidates`, `max_removals`, `max_evaluations` | Searches bounded single/pair removals of selected disruptions |
 | `analyze_recovery_sensitivity` | `scenario`, `deadline_ms`, `duration_percent` | Simulates discrete duration changes while keeping disruptions and backoff fixed |
 | `analyze_recovery_utilization` | `scenario`, `trace` | Audits evidence, then accounts for worker capacity, busy/idle/outage time, and retry waits |
+| `evaluate_recovery_portfolio` | `scenarios`, `strategies`, `deadline_ms`, `max_worker_busy_ms` | Evaluates 4–64 scenario/policy combinations with feasibility, robust selection, and Pareto tradeoffs |
+| `compare_recovery_traces` | `baseline`, `candidate`, `deadline_ms` | Audits both scenario/trace pairs, then reports incident completion changes and signed resource deltas |
+| `analyze_recovery_waits` | `scenario`, `trace` | Audits readiness and decomposes ready-to-dispatch waits by worker availability, contention, and dispatch gaps |
+| `explain_recovery_failures` | `scenario`, `trace`, `max_causes` | Audits exhausted roots and returns bounded, deterministic shortest paths to unfinished incidents |
+| `evaluate_recovery_objectives` | `scenario`, `trace`, `weights`, `milestones`, `horizon_ms` | Audits weighted incident coverage and integrates unresolved burden over the observation window |
+| `search_recovery_capacity` | Scenario and objectives, `worker_options`, `require_complete`, work/burden budgets | Tests every supplied worker pool and selects the smallest qualifying option without assuming monotonic outcomes |
 
 Hardened names use the usual `sim_` prefix. Analysis and bundles are read-only. Their prerequisite traversals enforce the same missing-record, permission, and cycle checks as resolution plans. Resource links identify JSON resources; clients follow them through `resources/read` for the current record rather than treating the link itself as a snapshot.
 
@@ -89,6 +95,12 @@ The race checker derives precedence from returned per-record versions and prereq
 `--campaign-analysis-stress` adds bounded mitigation searches, truncated evaluation budgets, and duration sensitivity. Independently enumerated real simulation witnesses verify the reported results and checkpoint claims. See [counterfactual recovery semantics](counterfactual-recovery.md).
 
 `--campaign-utilization-stress` adds paired simulation/accounting actions before mutations, partway through recovery, after completion, and during seeded stress. Overlapping outages and repeated failures exercise capacity accounting; an independent interval sweep checks every response and checkpoint. See [recovery capacity and viewer semantics](recovery-utilization.md).
+
+`--campaign-portfolio-stress` adds cross-scenario policy matrices, budget/deadline feasibility, Pareto tradeoffs, and paired trace comparisons before, during, and after graph mutations. Separately requested simulation witnesses verify the complete matrix and every incident difference. Checkpoint replay re-audits those witnesses and recomputes all reported metrics. See [portfolio and comparison semantics](recovery-portfolios.md).
+
+`--campaign-diagnostics-stress` adds successful retry schedules, overlapping outages, simultaneous root failures, cause truncation, partial-state explanations, and empty completed-state explanations. Each action records a simulation and both diagnostic responses. Independent interval-overlap calculations verify waiting; a reverse-distance graph check verifies canonical shortest failure paths. Saved checkpoints repeat those checks. See [waiting and failure-path semantics](recovery-explanations.md).
+
+`--campaign-objectives-stress` adds weighted target milestones and exhaustive capacity searches before, during, and after graph recovery. Each action retains the search result, objective evaluation for its first candidate, and separately requested traces for every worker option. Independent event-window integration verifies burden, coverage, constraints, and selection during execution and checkpoint restore. See [weighted objectives and capacity semantics](recovery-objectives.md).
 
 Campaigns subscribe to the first and terminal graph resources. Each mutation must produce exactly the expected subscribed URI notifications, including post-commit error responses. Hardened receipt replays and failed transactions must produce none. Catalog transitions are checked separately for exactly one notification per changed list. All notification evidence is retained in result rows and the wire journal.
 

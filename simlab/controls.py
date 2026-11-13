@@ -13,6 +13,8 @@ from typing import Any
 from jsonschema import Draft202012Validator
 from .recovery_decisions import STRATEGY_SCHEMA, DEADLINES_SCHEMA
 from .counterfactuals import CANDIDATES, PERCENTAGES
+from .recovery_portfolio import LABEL
+from .recovery_objectives import WEIGHTS, MILESTONES
 
 
 class Denied(ValueError):
@@ -91,6 +93,34 @@ SCHEMAS["simulate_recovery_resilience"]["required"] += ["max_attempts", "retry_b
 SCHEMAS["validate_recovery_trace"] = {"type": "object", "additionalProperties": False, "required": ["scenario", "trace"],
     "properties": {"scenario": copy.deepcopy(SCHEMAS["simulate_recovery_resilience"]), "trace": {"type": "object"}}}
 SCHEMAS["analyze_recovery_utilization"] = copy.deepcopy(SCHEMAS["validate_recovery_trace"])
+SCHEMAS["analyze_recovery_waits"] = copy.deepcopy(SCHEMAS["validate_recovery_trace"])
+SCHEMAS["explain_recovery_failures"] = copy.deepcopy(SCHEMAS["validate_recovery_trace"])
+SCHEMAS["explain_recovery_failures"]["properties"]["max_causes"] = {"type": "integer", "minimum": 1, "maximum": 8}
+SCHEMAS["explain_recovery_failures"]["required"].append("max_causes")
+SCHEMAS["evaluate_recovery_objectives"] = copy.deepcopy(SCHEMAS["validate_recovery_trace"])
+SCHEMAS["evaluate_recovery_objectives"]["properties"].update(weights=WEIGHTS, milestones=MILESTONES,
+    horizon_ms={"type": "integer", "minimum": 0, "maximum": 1000000})
+SCHEMAS["evaluate_recovery_objectives"]["required"] += ["weights", "milestones", "horizon_ms"]
+SCHEMAS["search_recovery_capacity"] = copy.deepcopy(SCHEMAS["evaluate_recovery_objectives"])
+del SCHEMAS["search_recovery_capacity"]["properties"]["trace"]
+SCHEMAS["search_recovery_capacity"]["required"].remove("trace")
+SCHEMAS["search_recovery_capacity"]["properties"].update(
+    worker_options={"type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": True,
+        "items": {"type": "integer", "minimum": 1, "maximum": 16}}, require_complete={"type": "boolean"},
+    max_worker_busy_ms={"type": "integer", "minimum": 0, "maximum": 1000000},
+    max_unresolved_weight_ms={"type": "integer", "minimum": 0, "maximum": 128000000000})
+SCHEMAS["search_recovery_capacity"]["required"] += ["worker_options", "require_complete", "max_worker_busy_ms", "max_unresolved_weight_ms"]
+SCHEMAS["evaluate_recovery_portfolio"] = {"type": "object", "additionalProperties": False,
+    "required": ["scenarios", "strategies", "deadline_ms", "max_worker_busy_ms"], "properties": {
+        "scenarios": {"type": "array", "minItems": 2, "maxItems": 8, "items": {"type": "object",
+            "additionalProperties": False, "required": ["label", "scenario"], "properties": {
+                "label": LABEL, "scenario": copy.deepcopy(SCHEMAS["simulate_recovery_resilience"])}}},
+        "strategies": {"type": "array", "minItems": 2, "maxItems": 8, "items": STRATEGY_SCHEMA},
+        **{key: {"type": "integer", "minimum": 0, "maximum": 1000000} for key in ("deadline_ms", "max_worker_busy_ms")}}}
+SCHEMAS["compare_recovery_traces"] = {"type": "object", "additionalProperties": False,
+    "required": ["baseline", "candidate", "deadline_ms"], "properties": {
+        **{key: copy.deepcopy(SCHEMAS["validate_recovery_trace"]) for key in ("baseline", "candidate")},
+        "deadline_ms": {"type": "integer", "minimum": 0, "maximum": 1000000}}}
 SCHEMAS["compare_recovery_strategies"] = {"type": "object", "additionalProperties": False,
     "required": ["scenario", "deadline_ms", "strategies"], "properties": {
         "scenario": copy.deepcopy(SCHEMAS["simulate_recovery_resilience"]),
@@ -119,9 +149,16 @@ DENSE_TOOLS = {"search_documents", "get_record", "update_record", "batch_update_
                "incident_bundle", "set_catalog_profile", "get_client_root_status", "simulate_dependency_outage", "plan_recovery",
                "simulate_recovery_timeline", "rank_dependency_bottlenecks", "simulate_recovery_resilience", "validate_recovery_trace",
                "compare_recovery_strategies", "evaluate_recovery_deadlines", "search_recovery_mitigations", "analyze_recovery_sensitivity",
-               "analyze_recovery_utilization"}
+               "analyze_recovery_utilization", "evaluate_recovery_portfolio", "compare_recovery_traces",
+               "analyze_recovery_waits", "explain_recovery_failures", "evaluate_recovery_objectives", "search_recovery_capacity"}
 
 DESCRIPTIONS = {
+    "evaluate_recovery_objectives": "Audit scenario/trace evidence against current snapshots, then score 1 to 128 weighted closure incidents at 1 to 16 distinct milestones within horizon_ms. Reports weighted coverage, milestone outcomes and unresolved weight integrated over logical time. Weights are positive integers; initially resolved targets complete at zero. Time coverage is null at a zero horizon. Target completion and whole-recovery completion are separate. Read-only; rejects stale/forged traces and ambiguous or out-of-scope objectives.",
+    "search_recovery_capacity": "Exhaustively simulate 1 to 16 distinct worker counts on one authorized snapshot, keeping durations, retries, backoff, faults and outage worker IDs fixed. Select the smallest tested pool meeting weighted milestones, busy-time and unresolved-weight budgets, plus whole-recovery completion when require_complete=true. Every outage worker must fit every option. Returns all candidates and null if none qualifies. Read-only; does not assume more workers improve results or claim optimality outside the supplied options and fixed policy.",
+    "analyze_recovery_waits": "Audit scenario/trace evidence against current snapshots, then explain readiness and every ready-to-dispatch wait. Classifies time as all workers unavailable, available workers busy, or a free-worker dispatch gap. Dependency and retry readiness are absolute logical times; required backoff is reported separately. Task-level waiting totals may overlap and are not worker capacity or proof of scheduler optimality. Read-only; rejects stale or forged evidence.",
+    "explain_recovery_failures": "Audit scenario/trace evidence against current snapshots, then trace exhausted attempts through blocked phase/dependency edges to unfinished incidents. Returns exhausted roots, their affected-record counts and deterministic shortest task paths, with 1 to 8 causes per incident. cause_count and truncated report omitted paths; roots identify the final interruption/fault reason. Read-only; this is recorded deterministic propagation, not a probability or unique real-world cause.",
+    "evaluate_recovery_portfolio": "Evaluate 2 to 8 labeled scenarios against 2 to 8 labeled worker/retry policies on one authorized snapshot (at most 64 simulations). Scenarios must share one target; every outage worker must fit every policy. Returns a deadline/busy-time budget matrix, Pareto frontier, and the fastest worst-case policy satisfying both limits in every scenario, or null. Labels must be unique within each axis. Read-only; scenario counts are not probabilities or evidence of global optimality.",
+    "compare_recovery_traces": "Independently audit baseline and candidate scenario/trace pairs against the same current snapshot and target, then compare incident completion times, deadline outcomes, retries and worker busy time. Positive deltas mean candidate minus baseline. Whole-recovery elapsed delta is null unless both completed. Identifies recovered/lost/unfinished incidents without treating failed-fast runs as improvements. Read-only; rejects stale or forged evidence; differences do not establish causation.",
     "analyze_recovery_utilization": "Audit a scenario and trace against current snapshots, then explain worker capacity, productive/failed attempt time, unioned outages, idle time, and retry waiting. Utilization is integer basis points of available capacity, null when no capacity exists. Task-level retry waits are separate from worker capacity. Read-only; invalid or stale traces are rejected.",
     "search_recovery_mitigations": "Search removal of up to two selected fault/outage entries using at most 40 evaluations on one frozen snapshot. Supply 1 to 8 candidate references (kind fault/outage, original array index). Returns baseline and trials, deadline outcomes, best_trial, and search_complete. Prefers fewer removals, then elapsed time, attempts and reference order. Read-only; does not change real fault settings.",
     "analyze_recovery_sensitivity": "Simulate 2 to 8 distinct duration percentages (25 to 400) on one frozen scenario. Durations round upward to integer milliseconds and must remain at most 1000 ms. Faults, outages and backoff remain fixed. Returns sample outcomes and robust_across_samples, not a statistical probability. Does not modify incidents.",
@@ -264,8 +301,14 @@ class Firewall:
                 raise Denied("duplicate_record")
         if name == "simulate_dependency_outage" and any(key not in self.config.get("allowed_records", []) for key in args["failed_records"]):
             raise Denied("record_not_authorized")
-        if name in ("validate_recovery_trace", "compare_recovery_strategies", "evaluate_recovery_deadlines", "search_recovery_mitigations", "analyze_recovery_sensitivity", "analyze_recovery_utilization"):
+        if name in ("validate_recovery_trace", "compare_recovery_strategies", "evaluate_recovery_deadlines", "search_recovery_mitigations", "analyze_recovery_sensitivity", "analyze_recovery_utilization", "analyze_recovery_waits", "explain_recovery_failures", "evaluate_recovery_objectives", "search_recovery_capacity"):
             self.check("sim_simulate_recovery_resilience", args["scenario"], consume=False)
+        if name == "evaluate_recovery_portfolio":
+            for sample in args["scenarios"]:
+                self.check("sim_simulate_recovery_resilience", sample["scenario"], consume=False)
+        if name == "compare_recovery_traces":
+            for side in ("baseline", "candidate"):
+                self.check("sim_simulate_recovery_resilience", args[side]["scenario"], consume=False)
         if name in ("update_record", "batch_update_records", "preview_updates", "guided_update_record"):
             state = self.config["handles"].get(args["handle"], {})
             if (state.get("session") != self.config["session"] or state.get("audience") != "ops"

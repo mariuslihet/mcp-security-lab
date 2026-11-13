@@ -170,6 +170,12 @@ The graph tools now also include **`simulate_dependency_outage`**, which traces 
 
 **`analyze_recovery_utilization`** audits recovery evidence before reporting worker capacity, successful and failed attempt time, overlapping outages, idle time, and retry waits. Add `--campaign-utilization-stress` for independently checked accounting throughout graph campaigns. The report inspector also provides worker timelines, incident/outcome filters, attempt details, and filtered CSV downloads for recorded recovery traces. See [capacity analysis and the recovery viewer](docs/recovery-utilization.md).
 
+**`evaluate_recovery_portfolio`** evaluates up to eight disruption scenarios against eight recovery policies, including deadlines, worker-time budgets, and Pareto tradeoffs. **`compare_recovery_traces`** audits two traces before reporting incident-level improvements, regressions, recovered work, and lost recoveries. Add `--campaign-portfolio-stress` for cross-scenario matrices and trace differences verified against separate simulation witnesses, including checkpoint replay. The inspector shows readable policy matrices and completion changes. See [recovery portfolios and trace comparisons](docs/recovery-portfolios.md).
+
+**`analyze_recovery_waits`** explains each attempt's dependency/retry readiness and waiting for unavailable workers, busy workers, or dispatch. **`explain_recovery_failures`** connects exhausted attempts to unfinished incidents through shortest phase/dependency paths, with explicit cause limits. Both audit current trace evidence first. Add `--campaign-diagnostics-stress` for independently checked explanations throughout graph campaigns. See [recovery waits and failure paths](docs/recovery-explanations.md).
+
+**`evaluate_recovery_objectives`** scores weighted incident coverage at milestones and measures unresolved work over time. **`search_recovery_capacity`** tests up to 16 worker pools and selects the smallest supplied option meeting those objectives and work/burden budgets. Whole-recovery completion is an explicit search requirement, separate from critical-target success. Add `--campaign-objectives-stress` for independently verified scoring and capacity selection. See [weighted objectives and capacity search](docs/recovery-objectives.md).
+
 For mixed disjoint/overlapping transactions, weaker-handle probes, workspace withdrawal, and notified or silent approval-time root drift across all three transports:
 
 ```powershell
@@ -236,6 +242,9 @@ Protocol checks run once for each server and transport combination. Every select
 | `--campaign-strategy-stress` | Off | Compare policies and score deadlines against independently audited simulation witnesses |
 | `--campaign-analysis-stress` | Off | Search joint mitigations and analyze duration sensitivity with independent witnesses |
 | `--campaign-utilization-stress` | Off | Audit worker capacity and retry waits with an independent interval sweep |
+| `--campaign-portfolio-stress` | Off | Evaluate cross-scenario policy matrices and audited trace regressions against separate witnesses |
+| `--campaign-diagnostics-stress` | Off | Audit attempt waiting and multi-root failure paths with independent overlap and reverse-graph checks |
+| `--campaign-objectives-stress` | Off | Score weighted recovery milestones and search worker pools with independent integration checks |
 | `--campaign-seed` | `7` | Reproducible campaign generator seed |
 | `--campaign-graph-nodes` | `0` | Use a dependency-graph campaign with 8–128 nodes; 0 keeps independent-record campaigns |
 | `--campaign-graph-width` | `4` | Generated graph layer width, 2–8; must be smaller than node count |
@@ -384,6 +393,8 @@ Notes and layout survive reloads when browser storage is available. A JSON expor
 
 Under **Compare with another run**, choose another saved `report.json`. The dashboard reads the file locally and shows counts, rates, percentage-point differences, errors, and case-level changes. Missing task grades and unmatched groups remain marked as unavailable or not comparable.
 
+Dense evidence can make the full report too large for the 20 MB comparison input limit. Use **Compact comparison JSON** (`comparison.json`) in that case. This export keeps all rows' comparison metrics, scope, error presence, and missing-grade/seed distinctions while omitting detailed tool evidence and error text. It produces the same comparison results as the full report. Keep `report.json` and the evidence folder for investigation, replay, and review notes; the compact export serves comparison only.
+
 The comparison identifies differences in model, cases, transports, seeds, and grading settings. Use that context when interpreting deltas: aggregate rate changes do not establish why outcomes changed. Export the case-level comparison as CSV when you want to review it elsewhere. Reference selections reset when cleared or when the page reloads.
 
 ## Reports and evidence files
@@ -392,6 +403,7 @@ The comparison identifies differences in model, cases, transports, seeds, and gr
 |---|---|
 | `report.html` | Interactive dashboard with its styles and scripts embedded |
 | `report.json` | Experiment settings, summary, comparisons, and result rows |
+| `comparison.json` | Compact scope and row metrics for comparing dense runs without loading their full evidence |
 | `report.md` | Readable summary and result table |
 | `results.csv` | Full result table for spreadsheet analysis |
 | `wire.jsonl` | JSON-RPC messages, forwarding stages, request IDs, and policy rejections |
